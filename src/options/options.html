@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Remap Key options</title>
+    <link rel="stylesheet" href="./options.css">
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <div>
+          <h1>Remap Key</h1>
+          <p>Manage multiple key remaps for each URL pattern.</p>
+        </div>
+        <button id="add-rule">Add URL rule</button>
+      </header>
+
+      <p class="page-note">Browser shortcuts like Ctrl + L or Ctrl + Shift + Tab cannot be replayed from a page, so use page-level shortcuts as remap targets.</p>
+
+      <section id="rules" class="rules"></section>
+
+      <footer class="footer-note">Contact/Bug Report : lcm1226@gmail.com</footer>
+    </main>
+
+    <template id="rule-template">
+      <article class="rule-card">
+        <label>
+          URL pattern
+          <input class="pattern-input" type="text" placeholder="https://mail.google.com/*">
+        </label>
+        <div class="mapping-list"></div>
+        <p class="rule-status"></p>
+        <div class="row-actions">
+          <button class="add-mapping" type="button">Add mapping</button>
+          <button class="save-rule" type="button">Save rule</button>
+          <button class="delete-rule secondary" type="button">Delete rule</button>
+        </div>
+      </article>
+    </template>
+
+    <template id="mapping-template">
+      <div class="mapping-row">
+        <label>
+          Source key
+          <button class="capture-button source-button" type="button">Capture source</button>
+          <input class="source-display" type="text" readonly placeholder="Delete">
+        </label>
+        <label>
+          Target key
+          <button class="capture-button target-button" type="button">Capture target</button>
+          <input class="target-display" type="text" readonly placeholder="Shift + 3">
+        </label>
+        <button class="delete-mapping secondary" type="button">Remove</button>
+      </div>
+    </template>
+
+    <script type="module" src="./options.js"></script>
+  </body>
+</html>

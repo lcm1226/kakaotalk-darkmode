@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Remap Key</title>
+    <link rel="stylesheet" href="./popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <h1>Remap Key</h1>
+      <p class="caption" id="current-url">Loading current tab...</p>
+
+      <form id="mapping-form" class="panel">
+        <label>
+          URL pattern
+          <input id="pattern" name="pattern" type="text" placeholder="https://mail.google.com/*" required>
+        </label>
+
+        <label>
+          When key is pressed
+          <button id="capture-from" type="button" class="capture-button">Capture source key</button>
+          <input id="from-display" type="text" readonly placeholder="Delete">
+        </label>
+
+        <label>
+          Remap to
+          <button id="capture-to" type="button" class="capture-button">Capture target key</button>
+          <input id="to-display" type="text" readonly placeholder="Shift + Digit3">
+        </label>
+
+        <div class="actions">
+          <button id="save-button" type="submit">Save mapping</button>
+          <button id="open-options" type="button" class="secondary">Open options</button>
+        </div>
+        <p id="form-status" class="status empty"></p>
+      </form>
+
+      <section class="panel">
+        <h2>Rules on this page</h2>
+        <div id="active-rules" class="empty">No matching rules yet.</div>
+      </section>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

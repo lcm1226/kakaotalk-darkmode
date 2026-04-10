@@ -1,0 +1,14 @@
+<Window x:Class="KakaoTalkFilterLab.OverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        ResizeMode="NoResize"
+        WindowStyle="None">
+    <Grid>
+        <Image x:Name="CaptureImage" Stretch="Fill" Visibility="Collapsed" />
+        <Border x:Name="DimFill" Background="#66000000" Visibility="Visible" />
+    </Grid>
+</Window>

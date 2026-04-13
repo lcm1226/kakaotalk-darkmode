@@ -92,13 +92,20 @@ internal sealed class WindowCaptureService
                 }
 
                 var index = y * stride + x * 4;
+                var preserveStrength = GetPreserveStrength(preserveMask, converted.PixelWidth, converted.PixelHeight, x, y);
+                if (preserveStrength <= 0)
+                {
+                    continue;
+                }
+
                 ApplyPreservedColor(
                     ref outputPixels[index],
                     ref outputPixels[index + 1],
                     ref outputPixels[index + 2],
                     originalPixels[index + 2],
                     originalPixels[index + 1],
-                    originalPixels[index]);
+                    originalPixels[index],
+                    preserveStrength);
             }
         }
 
@@ -214,7 +221,14 @@ internal sealed class WindowCaptureService
         return colorfulNeighbors >= 3;
     }
 
-    private static void ApplyPreservedColor(ref byte blueOut, ref byte greenOut, ref byte redOut, byte red, byte green, byte blue)
+    private static void ApplyPreservedColor(
+        ref byte blueOut,
+        ref byte greenOut,
+        ref byte redOut,
+        byte red,
+        byte green,
+        byte blue,
+        double preserveStrength)
     {
         var luminance = GetLuminance(red, green, blue);
         var brightnessScale = luminance switch
@@ -237,9 +251,9 @@ internal sealed class WindowCaptureService
         scaledGreen = average + (scaledGreen - average) * saturationBoost;
         scaledBlue = average + (scaledBlue - average) * saturationBoost;
 
-        redOut = ClampToByte(scaledRed);
-        greenOut = ClampToByte(scaledGreen);
-        blueOut = ClampToByte(scaledBlue);
+        redOut = BlendChannel(redOut, ClampToByte(scaledRed), preserveStrength);
+        greenOut = BlendChannel(greenOut, ClampToByte(scaledGreen), preserveStrength);
+        blueOut = BlendChannel(blueOut, ClampToByte(scaledBlue), preserveStrength);
     }
 
     private static bool[] BuildPreserveMask(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
@@ -360,6 +374,27 @@ internal sealed class WindowCaptureService
         return area >= 24 && width >= 5 && height >= 5 && fillRatio >= 0.70;
     }
 
+    private static double GetPreserveStrength(bool[] mask, int width, int height, int x, int y)
+    {
+        var preservedNeighbors = 0;
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            if (mask[ny * width + nx])
+            {
+                preservedNeighbors++;
+            }
+        }
+
+        return preservedNeighbors switch
+        {
+            >= 7 => 1.0,
+            6 => 0.88,
+            5 => 0.72,
+            4 => 0.58,
+            _ => 0.0
+        };
+    }
+
     private static IEnumerable<(int X, int Y)> EnumerateNeighborCoordinates(int x, int y, int width, int height, int radius)
     {
         for (var dy = -radius; dy <= radius; dy++)
@@ -393,6 +428,11 @@ internal sealed class WindowCaptureService
     private static double GetLuminance(byte red, byte green, byte blue)
     {
         return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    }
+
+    private static byte BlendChannel(byte baseValue, byte preservedValue, double preserveStrength)
+    {
+        return ClampToByte(baseValue + ((preservedValue - baseValue) * preserveStrength));
     }
 
     private delegate void PixelTransform(ref byte b, ref byte g, ref byte r, byte a);

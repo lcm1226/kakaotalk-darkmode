@@ -56,39 +56,119 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Foreground="#AAA" Text="Overlay" />
-                <WrapPanel Grid.Column="1" VerticalAlignment="Center">
-                    <CheckBox x:Name="OverlayEnabledCheckBox"
-                              VerticalAlignment="Center"
-                              Margin="0,0,12,0"
-                              Content="Enabled"
-                              IsChecked="True" />
-                    <TextBlock VerticalAlignment="Center" Foreground="#AAA" Text="Mode" />
-                    <ComboBox x:Name="ModeComboBox"
-                              Width="90"
-                              Margin="8,0,12,0"
-                              SelectedIndex="0">
-                        <ComboBoxItem Content="Dim" />
-                        <ComboBoxItem Content="Invert" />
-                        <ComboBoxItem Content="Smart" />
-                    </ComboBox>
-                    <TextBlock VerticalAlignment="Center" Foreground="#AAA" Text="Opacity" />
-                    <Slider x:Name="OpacitySlider"
-                            Width="110"
-                            Margin="8,0,8,0"
-                            Minimum="0"
-                            Maximum="200"
-                            Value="115" />
-                    <TextBlock x:Name="OpacityValue"
-                               Width="42"
-                               Margin="0,0,12,0"
-                               VerticalAlignment="Center"
-                               Foreground="White"
-                               TextAlignment="Right"
-                               Text="45%" />
-                    <Button x:Name="ExportFramesButton"
-                            Padding="10,2"
-                            Content="Export Frames" />
-                </WrapPanel>
+                <StackPanel Grid.Column="1">
+                    <WrapPanel VerticalAlignment="Center">
+                        <CheckBox x:Name="OverlayEnabledCheckBox"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,12,0"
+                                  Content="Enabled"
+                                  IsChecked="True" />
+                        <TextBlock VerticalAlignment="Center" Foreground="#AAA" Text="Mode" />
+                        <ComboBox x:Name="ModeComboBox"
+                                  Width="90"
+                                  Margin="8,0,12,0"
+                                  SelectedIndex="0">
+                            <ComboBoxItem Content="Dim" />
+                            <ComboBoxItem Content="Invert" />
+                            <ComboBoxItem Content="Smart" />
+                        </ComboBox>
+                        <TextBlock x:Name="ParameterLabel"
+                                   VerticalAlignment="Center"
+                                   Foreground="#AAA"
+                                   Text="Opacity" />
+                        <Slider x:Name="OpacitySlider"
+                                Width="110"
+                                Margin="8,0,8,0"
+                                Minimum="0"
+                                Maximum="200"
+                                Value="115" />
+                        <TextBlock x:Name="ParameterValue"
+                                   Width="42"
+                                   Margin="0,0,12,0"
+                                   VerticalAlignment="Center"
+                                   Foreground="White"
+                                   TextAlignment="Right"
+                                   Text="45%" />
+                        <Button x:Name="ExportFramesButton"
+                                Padding="10,2"
+                                Content="Export Frames" />
+                    </WrapPanel>
+
+                    <Grid x:Name="FilterSettingsPanel"
+                          Margin="0,10,0,0"
+                          Visibility="Collapsed">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="48" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="8" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Foreground="#AAA" VerticalAlignment="Center" Text="Strength" />
+                        <Slider x:Name="StrengthSlider"
+                                Grid.Row="0"
+                                Grid.Column="1"
+                                Minimum="0"
+                                Maximum="100"
+                                Value="100" />
+                        <TextBlock x:Name="StrengthValue"
+                                   Grid.Row="0"
+                                   Grid.Column="2"
+                                   Foreground="White"
+                                   HorizontalAlignment="Right"
+                                   Text="100%" />
+
+                        <TextBlock Grid.Row="2" Foreground="#AAA" VerticalAlignment="Center" Text="Brightness" />
+                        <Slider x:Name="BrightnessSlider"
+                                Grid.Row="2"
+                                Grid.Column="1"
+                                Minimum="-100"
+                                Maximum="100"
+                                Value="0" />
+                        <TextBlock x:Name="BrightnessValue"
+                                   Grid.Row="2"
+                                   Grid.Column="2"
+                                   Foreground="White"
+                                   HorizontalAlignment="Right"
+                                   Text="0" />
+
+                        <TextBlock Grid.Row="4" Foreground="#AAA" VerticalAlignment="Center" Text="Contrast" />
+                        <Slider x:Name="ContrastSlider"
+                                Grid.Row="4"
+                                Grid.Column="1"
+                                Minimum="50"
+                                Maximum="170"
+                                Value="100" />
+                        <TextBlock x:Name="ContrastValue"
+                                   Grid.Row="4"
+                                   Grid.Column="2"
+                                   Foreground="White"
+                                   HorizontalAlignment="Right"
+                                   Text="100%" />
+
+                        <TextBlock Grid.Row="6" Foreground="#AAA" VerticalAlignment="Center" Text="Gamma" />
+                        <Slider x:Name="GammaSlider"
+                                Grid.Row="6"
+                                Grid.Column="1"
+                                Minimum="60"
+                                Maximum="180"
+                                Value="100" />
+                        <TextBlock x:Name="GammaValue"
+                                   Grid.Row="6"
+                                   Grid.Column="2"
+                                   Foreground="White"
+                                   HorizontalAlignment="Right"
+                                   Text="100%" />
+                    </Grid>
+                </StackPanel>
 
                 <TextBlock Grid.Row="2" Foreground="#AAA" Text="Status" />
                 <TextBlock x:Name="StatusValue" Grid.Row="2" Grid.Column="1" Foreground="White" Text="Scanning..." />

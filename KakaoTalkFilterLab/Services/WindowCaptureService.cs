@@ -35,18 +35,39 @@ internal sealed class WindowCaptureService
         }
     }
 
-    public BitmapSource Invert(BitmapSource source)
+    public BitmapSource Invert(
+        BitmapSource source,
+        double strength = 1.0,
+        double brightness = 0,
+        double contrast = 1.0,
+        double gamma = 1.0)
     {
-        return Transform(source, static (ref byte b, ref byte g, ref byte r, byte a) =>
+        strength = Math.Clamp(strength, 0, 1);
+        return Transform(source, (ref byte b, ref byte g, ref byte r, byte a) =>
         {
-            r = (byte)(255 - r);
-            g = (byte)(255 - g);
-            b = (byte)(255 - b);
+            var invertedRed = (byte)(255 - r);
+            var invertedGreen = (byte)(255 - g);
+            var invertedBlue = (byte)(255 - b);
+
+            r = BlendChannel(r, invertedRed, strength);
+            g = BlendChannel(g, invertedGreen, strength);
+            b = BlendChannel(b, invertedBlue, strength);
+        },
+        (pixels, width, height) =>
+        {
+            ApplyToneAdjustments(pixels, brightness, contrast, gamma);
+            NormalizeOuterEdge(pixels, width, height);
         });
     }
 
-    public BitmapSource SmartInvert(BitmapSource source)
+    public BitmapSource SmartInvert(
+        BitmapSource source,
+        double strength = 1.0,
+        double brightness = 0,
+        double contrast = 1.0,
+        double gamma = 1.0)
     {
+        strength = Math.Clamp(strength, 0, 1);
         var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
         converted.Freeze();
 
@@ -80,19 +101,20 @@ internal sealed class WindowCaptureService
             }
         }
 
-        var preserveMask = BuildPreserveMask(candidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
+        var preserveStrengthMap = BuildPreserveStrengthMap(candidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
 
         for (var y = 0; y < converted.PixelHeight; y++)
         {
             for (var x = 0; x < converted.PixelWidth; x++)
             {
-                if (!preserveMask[y * converted.PixelWidth + x])
+                var componentStrength = preserveStrengthMap[y * converted.PixelWidth + x];
+                if (componentStrength <= 0)
                 {
                     continue;
                 }
 
                 var index = y * stride + x * 4;
-                var preserveStrength = GetPreserveStrength(preserveMask, converted.PixelWidth, converted.PixelHeight, x, y);
+                var preserveStrength = GetPreserveStrength(preserveStrengthMap, converted.PixelWidth, converted.PixelHeight, x, y) * componentStrength;
                 if (preserveStrength <= 0)
                 {
                     continue;
@@ -108,6 +130,19 @@ internal sealed class WindowCaptureService
                     preserveStrength);
             }
         }
+
+        if (strength < 1.0)
+        {
+            for (var index = 0; index < outputPixels.Length; index += 4)
+            {
+                outputPixels[index] = BlendChannel(originalPixels[index], outputPixels[index], strength);
+                outputPixels[index + 1] = BlendChannel(originalPixels[index + 1], outputPixels[index + 1], strength);
+                outputPixels[index + 2] = BlendChannel(originalPixels[index + 2], outputPixels[index + 2], strength);
+            }
+        }
+
+        ApplyToneAdjustments(outputPixels, brightness, contrast, gamma);
+        NormalizeOuterEdge(outputPixels, converted.PixelWidth, converted.PixelHeight);
 
         var result = BitmapSource.Create(
             converted.PixelWidth,
@@ -174,6 +209,49 @@ internal sealed class WindowCaptureService
     private static byte ClampToByte(double value)
     {
         return (byte)Math.Clamp((int)Math.Round(value), 0, 255);
+    }
+
+    private static void ApplyToneAdjustments(byte[] pixels, double brightness, double contrast, double gamma)
+    {
+        var brightnessOffset = Math.Clamp(brightness, -1.0, 1.0) * 0.28;
+        var contrastScale = Math.Clamp(contrast, 0.5, 1.7);
+        var gammaScale = Math.Clamp(gamma, 0.6, 1.8);
+
+        if (Math.Abs(brightnessOffset) < 0.0001 &&
+            Math.Abs(contrastScale - 1.0) < 0.0001 &&
+            Math.Abs(gammaScale - 1.0) < 0.0001)
+        {
+            return;
+        }
+
+        for (var index = 0; index < pixels.Length; index += 4)
+        {
+            pixels[index] = AdjustToneChannel(pixels[index], brightnessOffset, contrastScale, gammaScale);
+            pixels[index + 1] = AdjustToneChannel(pixels[index + 1], brightnessOffset, contrastScale, gammaScale);
+            pixels[index + 2] = AdjustToneChannel(pixels[index + 2], brightnessOffset, contrastScale, gammaScale);
+        }
+    }
+
+    private static void NormalizeOuterEdge(byte[] pixels, int width, int height)
+    {
+        if (width < 3 || height < 3)
+        {
+            return;
+        }
+
+        var stride = width * 4;
+
+        for (var x = 0; x < width; x++)
+        {
+            CopyPixel(pixels, stride, x, 1, x, 0);
+            CopyPixel(pixels, stride, x, height - 2, x, height - 1);
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            CopyPixel(pixels, stride, 1, y, 0, y);
+            CopyPixel(pixels, stride, width - 2, y, width - 1, y);
+        }
     }
 
     private static bool IsColorCandidate(byte[] pixels, int width, int height, int x, int y, int stride)
@@ -256,9 +334,9 @@ internal sealed class WindowCaptureService
         blueOut = BlendChannel(blueOut, ClampToByte(scaledBlue), preserveStrength);
     }
 
-    private static bool[] BuildPreserveMask(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
+    private static double[] BuildPreserveStrengthMap(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
     {
-        var preserveMask = new bool[candidateMask.Length];
+        var preserveStrengthMap = new double[candidateMask.Length];
         var visited = new bool[candidateMask.Length];
         var queue = new Queue<int>();
         var component = new List<int>();
@@ -334,13 +412,14 @@ internal sealed class WindowCaptureService
                 continue;
             }
 
+            var componentStrength = GetComponentPreserveStrength(component.Count, componentWidth, componentHeight, fillRatio);
             foreach (var index in component)
             {
-                preserveMask[index] = true;
+                preserveStrengthMap[index] = componentStrength;
             }
         }
 
-        return preserveMask;
+        return preserveStrengthMap;
     }
 
     private static bool ShouldKeepComponent(
@@ -374,12 +453,27 @@ internal sealed class WindowCaptureService
         return area >= 24 && width >= 5 && height >= 5 && fillRatio >= 0.70;
     }
 
-    private static double GetPreserveStrength(bool[] mask, int width, int height, int x, int y)
+    private static double GetComponentPreserveStrength(int area, int width, int height, double fillRatio)
+    {
+        if (area >= 120 && width >= 10 && height >= 10)
+        {
+            return 1.0;
+        }
+
+        if (area >= 64 && width >= 7 && height >= 7)
+        {
+            return fillRatio >= 0.72 ? 0.90 : 0.82;
+        }
+
+        return fillRatio >= 0.78 ? 0.74 : 0.66;
+    }
+
+    private static double GetPreserveStrength(double[] strengthMap, int width, int height, int x, int y)
     {
         var preservedNeighbors = 0;
         foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
         {
-            if (mask[ny * width + nx])
+            if (strengthMap[ny * width + nx] > 0)
             {
                 preservedNeighbors++;
             }
@@ -387,10 +481,10 @@ internal sealed class WindowCaptureService
 
         return preservedNeighbors switch
         {
-            >= 7 => 1.0,
-            6 => 0.88,
-            5 => 0.72,
-            4 => 0.58,
+            8 => 1.0,
+            7 => 0.90,
+            6 => 0.68,
+            5 => 0.42,
             _ => 0.0
         };
     }
@@ -433,6 +527,24 @@ internal sealed class WindowCaptureService
     private static byte BlendChannel(byte baseValue, byte preservedValue, double preserveStrength)
     {
         return ClampToByte(baseValue + ((preservedValue - baseValue) * preserveStrength));
+    }
+
+    private static byte AdjustToneChannel(byte value, double brightnessOffset, double contrastScale, double gammaScale)
+    {
+        var normalized = value / 255.0;
+        normalized = Math.Pow(normalized, gammaScale);
+        normalized = ((normalized - 0.5) * contrastScale) + 0.5 + brightnessOffset;
+        return ClampToByte(Math.Clamp(normalized, 0, 1) * 255.0);
+    }
+
+    private static void CopyPixel(byte[] pixels, int stride, int sourceX, int sourceY, int targetX, int targetY)
+    {
+        var sourceIndex = sourceY * stride + sourceX * 4;
+        var targetIndex = targetY * stride + targetX * 4;
+        pixels[targetIndex] = pixels[sourceIndex];
+        pixels[targetIndex + 1] = pixels[sourceIndex + 1];
+        pixels[targetIndex + 2] = pixels[sourceIndex + 2];
+        pixels[targetIndex + 3] = pixels[sourceIndex + 3];
     }
 
     private delegate void PixelTransform(ref byte b, ref byte g, ref byte r, byte a);

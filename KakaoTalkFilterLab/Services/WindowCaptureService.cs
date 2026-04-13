@@ -56,7 +56,7 @@ internal sealed class WindowCaptureService
 
         var outputPixels = new byte[originalPixels.Length];
         Buffer.BlockCopy(originalPixels, 0, outputPixels, 0, originalPixels.Length);
-        var preserveMask = new bool[converted.PixelWidth * converted.PixelHeight];
+        var candidateMask = new bool[converted.PixelWidth * converted.PixelHeight];
 
         for (var y = 0; y < converted.PixelHeight; y++)
         {
@@ -76,11 +76,11 @@ internal sealed class WindowCaptureService
                 outputPixels[index] = (byte)(255 - blue);
                 outputPixels[index + 1] = (byte)(255 - green);
                 outputPixels[index + 2] = (byte)(255 - red);
-                preserveMask[y * converted.PixelWidth + x] = ShouldPreserveColorRegion(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride);
+                candidateMask[y * converted.PixelWidth + x] = IsColorCandidate(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride);
             }
         }
 
-        preserveMask = OpenMask(preserveMask, converted.PixelWidth, converted.PixelHeight);
+        var preserveMask = BuildPreserveMask(candidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
 
         for (var y = 0; y < converted.PixelHeight; y++)
         {
@@ -169,7 +169,7 @@ internal sealed class WindowCaptureService
         return (byte)Math.Clamp((int)Math.Round(value), 0, 255);
     }
 
-    private static bool ShouldPreserveColorRegion(byte[] pixels, int width, int height, int x, int y, int stride)
+    private static bool IsColorCandidate(byte[] pixels, int width, int height, int x, int y, int stride)
     {
         var index = y * stride + x * 4;
         var blue = pixels[index];
@@ -190,16 +190,15 @@ internal sealed class WindowCaptureService
         }
 
         var luminance = GetLuminance(red, green, blue);
-        var colorfulNeighbors = 0;
-        var similarNeighbors = 0;
-        var totalNeighbors = 0;
-        var distantColorHits = 0;
-        var chromaTotal = chroma;
-        var maxNeighborChroma = chroma;
-
-        foreach (var (nx, ny, distance) in EnumerateNeighborCoordinates(x, y, width, height, 2))
+        if (luminance < 18 || luminance > 245)
         {
-            totalNeighbors++;
+            return false;
+        }
+
+        var colorfulNeighbors = 0;
+
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
             var neighborIndex = ny * stride + nx * 4;
             var neighborBlue = pixels[neighborIndex];
             var neighborGreen = pixels[neighborIndex + 1];
@@ -210,37 +209,9 @@ internal sealed class WindowCaptureService
             {
                 colorfulNeighbors++;
             }
-
-            chromaTotal += neighborChroma;
-            if (neighborChroma > maxNeighborChroma)
-            {
-                maxNeighborChroma = neighborChroma;
-            }
-
-            var neighborLuminance = GetLuminance(neighborRed, neighborGreen, neighborBlue);
-            var colorDistance = Math.Abs(red - neighborRed) + Math.Abs(green - neighborGreen) + Math.Abs(blue - neighborBlue);
-            if (Math.Abs(luminance - neighborLuminance) < 70 && colorDistance < 190)
-            {
-                similarNeighbors++;
-
-                if (distance >= 2)
-                {
-                    distantColorHits++;
-                }
-            }
         }
 
-        if (totalNeighbors < 8)
-        {
-            return false;
-        }
-
-        var averageChroma = chromaTotal / (double)(totalNeighbors + 1);
-        return colorfulNeighbors >= 8
-            && similarNeighbors >= 6
-            && distantColorHits >= 3
-            && averageChroma >= 32
-            && maxNeighborChroma >= 52;
+        return colorfulNeighbors >= 2;
     }
 
     private static void ApplyPreservedColor(ref byte blueOut, ref byte greenOut, ref byte redOut, byte red, byte green, byte blue)
@@ -271,66 +242,119 @@ internal sealed class WindowCaptureService
         blueOut = ClampToByte(scaledBlue);
     }
 
-    private static bool[] OpenMask(bool[] mask, int width, int height)
+    private static bool[] BuildPreserveMask(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
     {
-        return DilateMask(ErodeMask(mask, width, height), width, height);
-    }
+        var preserveMask = new bool[candidateMask.Length];
+        var visited = new bool[candidateMask.Length];
+        var queue = new Queue<int>();
+        var component = new List<int>();
 
-    private static bool[] ErodeMask(bool[] mask, int width, int height)
-    {
-        var result = new bool[mask.Length];
-        for (var y = 1; y < height - 1; y++)
+        for (var start = 0; start < candidateMask.Length; start++)
         {
-            for (var x = 1; x < width - 1; x++)
+            if (!candidateMask[start] || visited[start])
             {
-                var keep = true;
-                for (var dy = -1; dy <= 1 && keep; dy++)
-                {
-                    for (var dx = -1; dx <= 1; dx++)
-                    {
-                        if (!mask[(y + dy) * width + (x + dx)])
-                        {
-                            keep = false;
-                            break;
-                        }
-                    }
-                }
+                continue;
+            }
 
-                result[y * width + x] = keep;
+            queue.Clear();
+            component.Clear();
+
+            visited[start] = true;
+            queue.Enqueue(start);
+
+            var minX = start % width;
+            var maxX = minX;
+            var minY = start / width;
+            var maxY = minY;
+            var chromaSum = 0.0;
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                component.Add(current);
+
+                var x = current % width;
+                var y = current / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                var pixelIndex = y * stride + x * 4;
+                chromaSum += GetChroma(pixels[pixelIndex + 2], pixels[pixelIndex + 1], pixels[pixelIndex]);
+
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                {
+                    var neighbor = ny * width + nx;
+                    if (!candidateMask[neighbor] || visited[neighbor])
+                    {
+                        continue;
+                    }
+
+                    visited[neighbor] = true;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            if (!ShouldKeepComponent(component.Count, maxX - minX + 1, maxY - minY + 1, chromaSum / component.Count))
+            {
+                continue;
+            }
+
+            foreach (var index in component)
+            {
+                preserveMask[index] = true;
             }
         }
 
-        return result;
+        return DilateMask(preserveMask, width, height);
+    }
+
+    private static bool ShouldKeepComponent(int area, int width, int height, double averageChroma)
+    {
+        if (averageChroma < 34)
+        {
+            return false;
+        }
+
+        if (area >= 36)
+        {
+            return true;
+        }
+
+        if (area >= 20 && width >= 4 && height >= 4)
+        {
+            return true;
+        }
+
+        return area >= 12 && width >= 6 && height >= 3;
     }
 
     private static bool[] DilateMask(bool[] mask, int width, int height)
     {
         var result = new bool[mask.Length];
-        for (var y = 1; y < height - 1; y++)
+        for (var y = 0; y < height; y++)
         {
-            for (var x = 1; x < width - 1; x++)
+            for (var x = 0; x < width; x++)
             {
-                var on = false;
-                for (var dy = -1; dy <= 1 && !on; dy++)
+                if (!mask[y * width + x])
                 {
-                    for (var dx = -1; dx <= 1; dx++)
-                    {
-                        if (mask[(y + dy) * width + (x + dx)])
-                        {
-                            on = true;
-                            break;
-                        }
-                    }
+                    continue;
                 }
 
-                result[y * width + x] = on;
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                {
+                    result[ny * width + nx] = true;
+                }
+
+                result[y * width + x] = true;
             }
         }
 
         return result;
     }
 
-    private static IEnumerable<(int X, int Y, int Distance)> EnumerateNeighborCoordinates(int x, int y, int width, int height, int radius)
+    private static IEnumerable<(int X, int Y)> EnumerateNeighborCoordinates(int x, int y, int width, int height, int radius)
     {
         for (var dy = -radius; dy <= radius; dy++)
         {
@@ -348,7 +372,7 @@ internal sealed class WindowCaptureService
                     continue;
                 }
 
-                yield return (nx, ny, Math.Max(Math.Abs(dx), Math.Abs(dy)));
+                yield return (nx, ny);
             }
         }
     }

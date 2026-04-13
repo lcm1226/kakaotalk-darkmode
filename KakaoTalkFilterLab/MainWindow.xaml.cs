@@ -292,7 +292,7 @@ public partial class MainWindow : Window
 
     private static string GetExportDirectory()
     {
-        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "captures"));
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "captures"));
     }
 
     private OverlayMode GetSelectedMode()

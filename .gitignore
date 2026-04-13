@@ -1,6 +1,7 @@
 KakaoTalkFilterLab/bin/
 KakaoTalkFilterLab/obj/
 KakaoTalkFilterLab/captures/
+captures/
 
 *.user
 *.suo

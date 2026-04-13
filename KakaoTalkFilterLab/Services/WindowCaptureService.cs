@@ -177,20 +177,20 @@ internal sealed class WindowCaptureService
         var red = pixels[index + 2];
 
         var chroma = GetChroma(red, green, blue);
-        if (chroma < 28)
+        if (chroma < 40)
         {
             return false;
         }
 
         var max = Math.Max(red, Math.Max(green, blue));
         var saturation = max == 0 ? 0 : chroma / (double)max;
-        if (saturation < 0.20)
+        if (saturation < 0.28)
         {
             return false;
         }
 
         var luminance = GetLuminance(red, green, blue);
-        if (luminance < 18 || luminance > 245)
+        if (luminance < 24 || luminance > 236)
         {
             return false;
         }
@@ -205,13 +205,13 @@ internal sealed class WindowCaptureService
             var neighborRed = pixels[neighborIndex + 2];
             var neighborChroma = GetChroma(neighborRed, neighborGreen, neighborBlue);
 
-            if (neighborChroma >= 18)
+            if (neighborChroma >= 28)
             {
                 colorfulNeighbors++;
             }
         }
 
-        return colorfulNeighbors >= 2;
+        return colorfulNeighbors >= 3;
     }
 
     private static void ApplyPreservedColor(ref byte blueOut, ref byte greenOut, ref byte redOut, byte red, byte green, byte blue)
@@ -267,6 +267,7 @@ internal sealed class WindowCaptureService
             var minY = start / width;
             var maxY = minY;
             var chromaSum = 0.0;
+            var saturationSum = 0.0;
 
             while (queue.Count > 0)
             {
@@ -281,7 +282,14 @@ internal sealed class WindowCaptureService
                 if (y > maxY) maxY = y;
 
                 var pixelIndex = y * stride + x * 4;
-                chromaSum += GetChroma(pixels[pixelIndex + 2], pixels[pixelIndex + 1], pixels[pixelIndex]);
+                var blue = pixels[pixelIndex];
+                var green = pixels[pixelIndex + 1];
+                var red = pixels[pixelIndex + 2];
+                var chroma = GetChroma(red, green, blue);
+                chromaSum += chroma;
+
+                var max = Math.Max(red, Math.Max(green, blue));
+                saturationSum += max == 0 ? 0 : chroma / (double)max;
 
                 foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
                 {
@@ -296,7 +304,18 @@ internal sealed class WindowCaptureService
                 }
             }
 
-            if (!ShouldKeepComponent(component.Count, maxX - minX + 1, maxY - minY + 1, chromaSum / component.Count))
+            var componentWidth = maxX - minX + 1;
+            var componentHeight = maxY - minY + 1;
+            var boundingArea = componentWidth * componentHeight;
+            var fillRatio = boundingArea == 0 ? 0 : component.Count / (double)boundingArea;
+
+            if (!ShouldKeepComponent(
+                    component.Count,
+                    componentWidth,
+                    componentHeight,
+                    fillRatio,
+                    chromaSum / component.Count,
+                    saturationSum / component.Count))
             {
                 continue;
             }
@@ -307,51 +326,38 @@ internal sealed class WindowCaptureService
             }
         }
 
-        return DilateMask(preserveMask, width, height);
+        return preserveMask;
     }
 
-    private static bool ShouldKeepComponent(int area, int width, int height, double averageChroma)
+    private static bool ShouldKeepComponent(
+        int area,
+        int width,
+        int height,
+        double fillRatio,
+        double averageChroma,
+        double averageSaturation)
     {
-        if (averageChroma < 34)
+        if (averageChroma < 46 || averageSaturation < 0.34)
         {
             return false;
         }
 
-        if (area >= 36)
+        if (fillRatio < 0.42)
+        {
+            return false;
+        }
+
+        if (area >= 90 && width >= 8 && height >= 8)
         {
             return true;
         }
 
-        if (area >= 20 && width >= 4 && height >= 4)
+        if (area >= 48 && width >= 6 && height >= 6 && fillRatio >= 0.55)
         {
             return true;
         }
 
-        return area >= 12 && width >= 6 && height >= 3;
-    }
-
-    private static bool[] DilateMask(bool[] mask, int width, int height)
-    {
-        var result = new bool[mask.Length];
-        for (var y = 0; y < height; y++)
-        {
-            for (var x = 0; x < width; x++)
-            {
-                if (!mask[y * width + x])
-                {
-                    continue;
-                }
-
-                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
-                {
-                    result[ny * width + nx] = true;
-                }
-
-                result[y * width + x] = true;
-            }
-        }
-
-        return result;
+        return area >= 24 && width >= 5 && height >= 5 && fillRatio >= 0.70;
     }
 
     private static IEnumerable<(int X, int Y)> EnumerateNeighborCoordinates(int x, int y, int width, int height, int radius)

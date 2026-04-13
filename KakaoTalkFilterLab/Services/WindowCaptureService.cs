@@ -78,6 +78,7 @@ internal sealed class WindowCaptureService
         var outputPixels = new byte[originalPixels.Length];
         Buffer.BlockCopy(originalPixels, 0, outputPixels, 0, originalPixels.Length);
         var candidateMask = new bool[converted.PixelWidth * converted.PixelHeight];
+        var photoCandidateMask = new bool[converted.PixelWidth * converted.PixelHeight];
 
         for (var y = 0; y < converted.PixelHeight; y++)
         {
@@ -98,23 +99,28 @@ internal sealed class WindowCaptureService
                 outputPixels[index + 1] = (byte)(255 - green);
                 outputPixels[index + 2] = (byte)(255 - red);
                 candidateMask[y * converted.PixelWidth + x] = IsColorCandidate(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride);
+                photoCandidateMask[y * converted.PixelWidth + x] = IsPhotoCandidate(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride);
             }
         }
 
         var preserveStrengthMap = BuildPreserveStrengthMap(candidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
+        var photoPreserveStrengthMap = BuildPhotoPreserveStrengthMap(photoCandidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
 
         for (var y = 0; y < converted.PixelHeight; y++)
         {
             for (var x = 0; x < converted.PixelWidth; x++)
             {
                 var componentStrength = preserveStrengthMap[y * converted.PixelWidth + x];
-                if (componentStrength <= 0)
+                var photoComponentStrength = photoPreserveStrengthMap[y * converted.PixelWidth + x];
+                if (componentStrength <= 0 && photoComponentStrength <= 0)
                 {
                     continue;
                 }
 
                 var index = y * stride + x * 4;
                 var preserveStrength = GetPreserveStrength(preserveStrengthMap, converted.PixelWidth, converted.PixelHeight, x, y) * componentStrength;
+                var photoPreserveStrength = GetPreserveStrength(photoPreserveStrengthMap, converted.PixelWidth, converted.PixelHeight, x, y) * photoComponentStrength;
+
                 if (preserveStrength <= 0)
                 {
                     continue;
@@ -142,6 +148,35 @@ internal sealed class WindowCaptureService
         }
 
         ApplyToneAdjustments(outputPixels, brightness, contrast, gamma);
+
+        for (var y = 0; y < converted.PixelHeight; y++)
+        {
+            for (var x = 0; x < converted.PixelWidth; x++)
+            {
+                var photoComponentStrength = photoPreserveStrengthMap[y * converted.PixelWidth + x];
+                if (photoComponentStrength <= 0)
+                {
+                    continue;
+                }
+
+                var index = y * stride + x * 4;
+                var photoPreserveStrength = GetPreserveStrength(photoPreserveStrengthMap, converted.PixelWidth, converted.PixelHeight, x, y) * photoComponentStrength;
+                if (photoPreserveStrength <= 0)
+                {
+                    continue;
+                }
+
+                ApplyOriginalPreservedColor(
+                    ref outputPixels[index],
+                    ref outputPixels[index + 1],
+                    ref outputPixels[index + 2],
+                    originalPixels[index + 2],
+                    originalPixels[index + 1],
+                    originalPixels[index],
+                    photoPreserveStrength);
+            }
+        }
+
         NormalizeOuterEdge(outputPixels, converted.PixelWidth, converted.PixelHeight);
 
         var result = BitmapSource.Create(
@@ -299,6 +334,48 @@ internal sealed class WindowCaptureService
         return colorfulNeighbors >= 3;
     }
 
+    private static bool IsPhotoCandidate(byte[] pixels, int width, int height, int x, int y, int stride)
+    {
+        var index = y * stride + x * 4;
+        var blue = pixels[index];
+        var green = pixels[index + 1];
+        var red = pixels[index + 2];
+        var alpha = pixels[index + 3];
+        if (alpha == 0)
+        {
+            return false;
+        }
+
+        var luminance = GetLuminance(red, green, blue);
+        if (luminance < 16 || luminance > 245)
+        {
+            return false;
+        }
+
+        var chroma = GetChroma(red, green, blue);
+        var localTexture = GetLocalTexture(pixels, width, height, x, y, stride);
+        if (localTexture < 7 && chroma < 22)
+        {
+            return false;
+        }
+
+        var avatarLikeNeighbors = 0;
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            var neighborIndex = ny * stride + nx * 4;
+            var neighborChroma = GetChroma(
+                pixels[neighborIndex + 2],
+                pixels[neighborIndex + 1],
+                pixels[neighborIndex]);
+            if (GetLocalTexture(pixels, width, height, nx, ny, stride) >= 7 || neighborChroma >= 22)
+            {
+                avatarLikeNeighbors++;
+            }
+        }
+
+        return avatarLikeNeighbors >= 3;
+    }
+
     private static void ApplyPreservedColor(
         ref byte blueOut,
         ref byte greenOut,
@@ -323,7 +400,7 @@ internal sealed class WindowCaptureService
         var scaledBlue = blue * brightnessScale;
 
         var average = (scaledRed + scaledGreen + scaledBlue) / 3.0;
-        const double saturationBoost = 1.18;
+        const double saturationBoost = 1.10;
 
         scaledRed = average + (scaledRed - average) * saturationBoost;
         scaledGreen = average + (scaledGreen - average) * saturationBoost;
@@ -332,6 +409,20 @@ internal sealed class WindowCaptureService
         redOut = BlendChannel(redOut, ClampToByte(scaledRed), preserveStrength);
         greenOut = BlendChannel(greenOut, ClampToByte(scaledGreen), preserveStrength);
         blueOut = BlendChannel(blueOut, ClampToByte(scaledBlue), preserveStrength);
+    }
+
+    private static void ApplyOriginalPreservedColor(
+        ref byte blueOut,
+        ref byte greenOut,
+        ref byte redOut,
+        byte red,
+        byte green,
+        byte blue,
+        double preserveStrength)
+    {
+        redOut = BlendChannel(redOut, red, preserveStrength);
+        greenOut = BlendChannel(greenOut, green, preserveStrength);
+        blueOut = BlendChannel(blueOut, blue, preserveStrength);
     }
 
     private static double[] BuildPreserveStrengthMap(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
@@ -422,6 +513,111 @@ internal sealed class WindowCaptureService
         return preserveStrengthMap;
     }
 
+    private static double[] BuildPhotoPreserveStrengthMap(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
+    {
+        var preserveStrengthMap = new double[candidateMask.Length];
+        var visited = new bool[candidateMask.Length];
+        var queue = new Queue<int>();
+        var component = new List<int>();
+
+        for (var start = 0; start < candidateMask.Length; start++)
+        {
+            if (!candidateMask[start] || visited[start])
+            {
+                continue;
+            }
+
+            queue.Clear();
+            component.Clear();
+
+            visited[start] = true;
+            queue.Enqueue(start);
+
+            var minX = start % width;
+            var maxX = minX;
+            var minY = start / width;
+            var maxY = minY;
+            var textureSum = 0.0;
+            var chromaSum = 0.0;
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                component.Add(current);
+
+                var x = current % width;
+                var y = current / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                var pixelIndex = y * stride + x * 4;
+                var blue = pixels[pixelIndex];
+                var green = pixels[pixelIndex + 1];
+                var red = pixels[pixelIndex + 2];
+                textureSum += GetLocalTexture(pixels, width, height, x, y, stride);
+                chromaSum += GetChroma(red, green, blue);
+
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                {
+                    var neighbor = ny * width + nx;
+                    if (!candidateMask[neighbor] || visited[neighbor])
+                    {
+                        continue;
+                    }
+
+                    visited[neighbor] = true;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            var componentWidth = maxX - minX + 1;
+            var componentHeight = maxY - minY + 1;
+            var boundingArea = componentWidth * componentHeight;
+            var fillRatio = boundingArea == 0 ? 0 : component.Count / (double)boundingArea;
+
+            if (!ShouldKeepPhotoComponent(
+                    component.Count,
+                    minX,
+                    maxX,
+                    componentWidth,
+                    componentHeight,
+                    width,
+                    fillRatio,
+                    textureSum / component.Count,
+                    chromaSum / component.Count))
+            {
+                continue;
+            }
+
+            var componentStrength = GetPhotoComponentPreserveStrength(component.Count, componentWidth, componentHeight, fillRatio);
+            var maskMinX = Math.Max(0, minX - 1);
+            var maskMaxX = Math.Min(width - 1, maxX + 1);
+            var maskMinY = Math.Max(0, minY - 1);
+            var maskMaxY = Math.Min(height - 1, maxY + 1);
+            var maskWidth = maskMaxX - maskMinX + 1;
+            var maskHeight = maskMaxY - maskMinY + 1;
+            var shape = GetAvatarShape(maskWidth, maskHeight, fillRatio);
+            var cornerRadius = GetPhotoCornerRadius(maskWidth, maskHeight, fillRatio);
+
+            for (var y = maskMinY; y <= maskMaxY; y++)
+            {
+                for (var x = maskMinX; x <= maskMaxX; x++)
+                {
+                    if (!IsInsideAvatarShape(x, y, maskMinX, maskMinY, maskWidth, maskHeight, cornerRadius, shape))
+                    {
+                        continue;
+                    }
+
+                    preserveStrengthMap[y * width + x] = Math.Max(preserveStrengthMap[y * width + x], componentStrength);
+                }
+            }
+        }
+
+        return preserveStrengthMap;
+    }
+
     private static bool ShouldKeepComponent(
         int area,
         int width,
@@ -466,6 +662,74 @@ internal sealed class WindowCaptureService
         }
 
         return fillRatio >= 0.78 ? 0.74 : 0.66;
+    }
+
+    private static bool ShouldKeepPhotoComponent(
+        int area,
+        int minX,
+        int maxX,
+        int width,
+        int height,
+        int frameWidth,
+        double fillRatio,
+        double averageTexture,
+        double averageChroma)
+    {
+        if (area < 180 || width < 16 || height < 16)
+        {
+            return false;
+        }
+
+        var aspectRatio = width / (double)height;
+        if (aspectRatio < 0.72 || aspectRatio > 1.38)
+        {
+            return false;
+        }
+
+        var centerX = (minX + maxX) / 2.0;
+        if (centerX < frameWidth * 0.10 || centerX > frameWidth * 0.33)
+        {
+            return false;
+        }
+
+        if (width > 96 || height > 96)
+        {
+            return false;
+        }
+
+        if (fillRatio < 0.34)
+        {
+            return false;
+        }
+
+        if (averageTexture < 9.5)
+        {
+            return false;
+        }
+
+        return averageChroma >= 7 || averageTexture >= 11.5;
+    }
+
+    private static double GetPhotoComponentPreserveStrength(int area, int width, int height, double fillRatio)
+    {
+        if (area >= 1000 && width >= 28 && height >= 28)
+        {
+            return 1.0;
+        }
+
+        if (area >= 360 && width >= 18 && height >= 18)
+        {
+            return fillRatio >= 0.58 ? 0.97 : 0.90;
+        }
+
+        return fillRatio >= 0.48 ? 0.86 : 0.78;
+    }
+
+    private static int GetPhotoCornerRadius(int width, int height, double fillRatio)
+    {
+        var size = Math.Min(width, height);
+        var radiusRatio = fillRatio < 0.74 ? 0.50 : 0.22;
+        return Math.Max(2, (int)Math.Round(size * radiusRatio));
     }
 
     private static double GetPreserveStrength(double[] strengthMap, int width, int height, int x, int y)
@@ -522,6 +786,105 @@ internal sealed class WindowCaptureService
     private static double GetLuminance(byte red, byte green, byte blue)
     {
         return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+    }
+
+    private static double GetLocalTexture(byte[] pixels, int width, int height, int x, int y, int stride)
+    {
+        var index = y * stride + x * 4;
+        var baseLuminance = GetLuminance(pixels[index + 2], pixels[index + 1], pixels[index]);
+        var differenceSum = 0.0;
+        var samples = 0;
+
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            var neighborIndex = ny * stride + nx * 4;
+            var neighborLuminance = GetLuminance(
+                pixels[neighborIndex + 2],
+                pixels[neighborIndex + 1],
+                pixels[neighborIndex]);
+            differenceSum += Math.Abs(baseLuminance - neighborLuminance);
+            samples++;
+        }
+
+        return samples == 0 ? 0 : differenceSum / samples;
+    }
+
+    private static bool IsInsideAvatarShape(
+        int x,
+        int y,
+        int left,
+        int top,
+        int width,
+        int height,
+        int radius,
+        AvatarShape shape)
+    {
+        return shape switch
+        {
+            AvatarShape.Circle => IsInsideEllipse(x, y, left, top, width, height),
+            _ => IsInsideRoundedRect(x, y, left, top, width, height, radius)
+        };
+    }
+
+    private static AvatarShape GetAvatarShape(int width, int height, double fillRatio)
+    {
+        var aspectRatio = width / (double)height;
+        if (aspectRatio >= 0.88 && aspectRatio <= 1.12 && fillRatio < 0.78)
+        {
+            return AvatarShape.Circle;
+        }
+
+        return AvatarShape.RoundedRect;
+    }
+
+    private static bool IsInsideRoundedRect(int x, int y, int left, int top, int width, int height, int radius)
+    {
+        if (radius <= 0)
+        {
+            return true;
+        }
+
+        var right = left + width - 1;
+        var bottom = top + height - 1;
+
+        if (x >= left + radius && x <= right - radius)
+        {
+            return true;
+        }
+
+        if (y >= top + radius && y <= bottom - radius)
+        {
+            return true;
+        }
+
+        var cornerCenterX = x < left + radius ? left + radius : right - radius;
+        var cornerCenterY = y < top + radius ? top + radius : bottom - radius;
+        var dx = x - cornerCenterX;
+        var dy = y - cornerCenterY;
+
+        return (dx * dx) + (dy * dy) <= radius * radius;
+    }
+
+    private static bool IsInsideEllipse(int x, int y, int left, int top, int width, int height)
+    {
+        var radiusX = width / 2.0;
+        var radiusY = height / 2.0;
+        if (radiusX <= 0 || radiusY <= 0)
+        {
+            return false;
+        }
+
+        var centerX = left + radiusX;
+        var centerY = top + radiusY;
+        var dx = (x + 0.5 - centerX) / radiusX;
+        var dy = (y + 0.5 - centerY) / radiusY;
+        return (dx * dx) + (dy * dy) <= 1.0;
+    }
+
+    private enum AvatarShape
+    {
+        RoundedRect,
+        Circle
     }
 
     private static byte BlendChannel(byte baseValue, byte preservedValue, double preserveStrength)

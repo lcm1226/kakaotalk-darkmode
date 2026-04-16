@@ -45,6 +45,7 @@ public partial class App : Application
         captureService.SavePng(source, Path.Combine(outputDirectory, "source.png"));
         captureService.SavePng(captureService.Invert(source), Path.Combine(outputDirectory, "invert.png"));
         captureService.SavePng(captureService.SmartInvert(source), Path.Combine(outputDirectory, "smart.png"));
+        captureService.SaveSmartDebugOutputs(source, outputDirectory);
         File.WriteAllText(
             Path.Combine(outputDirectory, "report.txt"),
             $"ProcessedAt={DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\nInput={inputPath}\r\n");

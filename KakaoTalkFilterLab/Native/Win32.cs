@@ -10,6 +10,8 @@ internal static class Win32
     private const int WsExTransparent = 0x20;
     private const int WsExToolwindow = 0x80;
     private const int WsExNoactivate = 0x08000000;
+    public const int WmHotkey = 0x0312;
+    public const uint ModControl = 0x0002;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoZorder = 0x0004;
     private const uint SwpShowWindow = 0x0040;
@@ -85,6 +87,12 @@ internal static class Win32
         int cx,
         int cy,
         uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(nint hwnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(nint hwnd, int id);
 
     public static IReadOnlyList<WindowInfo> EnumerateVisibleWindowsForProcess(string processName)
     {
@@ -165,6 +173,16 @@ internal static class Win32
             width,
             height,
             flags);
+    }
+
+    public static bool TryRegisterHotKey(nint hwnd, int id, uint modifiers, uint virtualKey)
+    {
+        return RegisterHotKey(hwnd, id, modifiers, virtualKey);
+    }
+
+    public static void TryUnregisterHotKey(nint hwnd, int id)
+    {
+        _ = UnregisterHotKey(hwnd, id);
     }
 
     public static nint TryCaptureWindowBitmap(nint hwnd, int width, int height)

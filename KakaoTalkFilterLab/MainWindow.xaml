@@ -9,7 +9,10 @@
         Height="520"
         MinWidth="760"
         MinHeight="520"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Background="#EEF1F4"
+        FontFamily="Pretendard Variable, Pretendard, Segoe UI"
+        FontWeight="SemiBold">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -61,8 +64,14 @@
                         <CheckBox x:Name="OverlayEnabledCheckBox"
                                   VerticalAlignment="Center"
                                   Margin="0,0,12,0"
+                                  Foreground="#F5F7FA"
                                   Content="Enabled"
                                   IsChecked="True" />
+                        <CheckBox x:Name="PrivacyModeCheckBox"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,12,0"
+                                  Foreground="#F5F7FA"
+                                  Content="Privacy mode" />
                         <TextBlock VerticalAlignment="Center" Foreground="#AAA" Text="Mode" />
                         <ComboBox x:Name="ModeComboBox"
                                   Width="90"
@@ -205,10 +214,13 @@
             <DataGrid x:Name="CandidatesGrid"
                       Grid.Row="2"
                       AutoGenerateColumns="False"
+                      Background="#F6F8FA"
+                      BorderBrush="#D4D9E1"
                       CanUserAddRows="False"
                       CanUserDeleteRows="False"
                       HeadersVisibility="Column"
                       IsReadOnly="True"
+                      RowBackground="#F6F8FA"
                       RowHeaderWidth="0"
                       SelectionMode="Single">
                 <DataGrid.Columns>

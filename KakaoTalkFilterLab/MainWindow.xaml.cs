@@ -4,6 +4,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.IO;
 using System.Text.Json;
+using System.Windows.Input;
+using System.Windows.Interop;
 using KakaoTalkFilterLab.Models;
 using KakaoTalkFilterLab.Native;
 using KakaoTalkFilterLab.Services;
@@ -33,6 +35,7 @@ public partial class MainWindow : Window
     private const double DefaultSmartContrast = 120;
     private const double DefaultSmartGamma = 90;
     private const int DefaultModeIndex = 0;
+    private const int PrivacyModeHotKeyId = 0x4B48;
 
     private readonly DispatcherTimer _timer;
     private readonly KakaoTalkWindowFinder _windowFinder = new();
@@ -46,6 +49,7 @@ public partial class MainWindow : Window
     private DateTime _lastAutoExportUtc = DateTime.MinValue;
     private bool _isUpdatingParameterUi;
     private double _dimOpacityValue = DefaultDimOpacity;
+    private bool _isPrivacyModeEnabled;
     private readonly FilterTuning _invertTuning = new();
     private readonly FilterTuning _smartTuning = new()
     {
@@ -62,6 +66,8 @@ public partial class MainWindow : Window
 
         OverlayEnabledCheckBox.Checked += OverlayEnabledChanged;
         OverlayEnabledCheckBox.Unchecked += OverlayEnabledChanged;
+        PrivacyModeCheckBox.Checked += PrivacyModeChanged;
+        PrivacyModeCheckBox.Unchecked += PrivacyModeChanged;
         OpacitySlider.ValueChanged += OpacitySliderChanged;
         StrengthSlider.ValueChanged += FilterSliderChanged;
         BrightnessSlider.ValueChanged += FilterSliderChanged;
@@ -79,6 +85,7 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             _isUiReady = true;
+            PrivacyModeCheckBox.IsChecked = _isPrivacyModeEnabled;
             ConfigureParameterSlider();
             Refresh();
             _timer.Start();
@@ -88,11 +95,13 @@ public partial class MainWindow : Window
         {
             SavePersistedState();
             _timer.Stop();
+            UnregisterPrivacyModeHotKey();
             _windowsGraphicsCaptureService.Dispose();
             _overlayWindow.Close();
         };
 
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        SourceInitialized += OnSourceInitialized;
     }
 
     private void OnTick(object? sender, EventArgs e)
@@ -159,6 +168,8 @@ public partial class MainWindow : Window
         {
             _overlayWindow.Show();
         }
+
+        _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
 
         var shouldShowWindow = _lastOverlayWindowInfo is null;
         if (_lastOverlayWindowInfo is null || _lastOverlayWindowInfo != targetWindow)
@@ -470,6 +481,18 @@ public partial class MainWindow : Window
         Refresh();
     }
 
+    private void PrivacyModeChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_isUiReady)
+        {
+            return;
+        }
+
+        _isPrivacyModeEnabled = PrivacyModeCheckBox.IsChecked == true;
+        _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        Refresh();
+    }
+
     private void OpacitySliderChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (!_isUiReady || _isUpdatingParameterUi)
@@ -511,6 +534,14 @@ public partial class MainWindow : Window
         base.OnClosed(e);
     }
 
+    private void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        RegisterPrivacyModeHotKey();
+
+        var source = PresentationSource.FromVisual(this) as HwndSource;
+        source?.AddHook(WndProc);
+    }
+
     private void LoadPersistedState()
     {
         try
@@ -528,6 +559,7 @@ public partial class MainWindow : Window
             }
 
             _dimOpacityValue = Math.Clamp(state.DimOpacity, DimOpacityMinimum, DimOpacityMaximum);
+            _isPrivacyModeEnabled = state.IsPrivacyModeEnabled;
             ApplyPersistedTuning(_invertTuning, state.InvertStrength, state.InvertBrightness, state.InvertContrast, state.InvertGamma);
             ApplyPersistedTuning(_smartTuning, state.SmartStrength, state.SmartBrightness, state.SmartContrast, state.SmartGamma);
             ModeComboBox.SelectedIndex = Math.Clamp(state.ModeIndex, 0, 2);
@@ -552,6 +584,7 @@ public partial class MainWindow : Window
             {
                 ModeIndex = ModeComboBox.SelectedIndex,
                 DimOpacity = _dimOpacityValue,
+                IsPrivacyModeEnabled = _isPrivacyModeEnabled,
                 InvertStrength = _invertTuning.Strength,
                 InvertBrightness = _invertTuning.Brightness,
                 InvertContrast = _invertTuning.Contrast,
@@ -668,6 +701,7 @@ public partial class MainWindow : Window
     {
         public int ModeIndex { get; set; } = DefaultModeIndex;
         public double DimOpacity { get; set; } = DefaultDimOpacity;
+        public bool IsPrivacyModeEnabled { get; set; }
         public double InvertStrength { get; set; } = DefaultFilterStrength;
         public double InvertBrightness { get; set; } = DefaultBrightness;
         public double InvertContrast { get; set; } = DefaultContrast;
@@ -676,5 +710,47 @@ public partial class MainWindow : Window
         public double SmartBrightness { get; set; } = DefaultSmartBrightness;
         public double SmartContrast { get; set; } = DefaultSmartContrast;
         public double SmartGamma { get; set; } = DefaultSmartGamma;
+    }
+
+    private void TogglePrivacyMode()
+    {
+        _isPrivacyModeEnabled = !_isPrivacyModeEnabled;
+
+        if (_isUiReady)
+        {
+            PrivacyModeCheckBox.IsChecked = _isPrivacyModeEnabled;
+        }
+        else
+        {
+            _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        }
+
+        Refresh();
+    }
+
+    private void RegisterPrivacyModeHotKey()
+    {
+        var hwnd = new WindowInteropHelper(this).EnsureHandle();
+        _ = Win32.TryRegisterHotKey(hwnd, PrivacyModeHotKeyId, Win32.ModControl, (uint)KeyInterop.VirtualKeyFromKey(Key.H));
+    }
+
+    private void UnregisterPrivacyModeHotKey()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != 0)
+        {
+            Win32.TryUnregisterHotKey(hwnd, PrivacyModeHotKeyId);
+        }
+    }
+
+    private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
+    {
+        if (msg == Win32.WmHotkey && wParam.ToInt32() == PrivacyModeHotKeyId)
+        {
+            TogglePrivacyMode();
+            handled = true;
+        }
+
+        return nint.Zero;
     }
 }

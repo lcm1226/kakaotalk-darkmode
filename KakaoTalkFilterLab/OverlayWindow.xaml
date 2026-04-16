@@ -10,5 +10,13 @@
     <Grid>
         <Image x:Name="CaptureImage" Stretch="Fill" Visibility="Collapsed" />
         <Border x:Name="DimFill" Background="#66000000" Visibility="Visible" />
+        <Canvas x:Name="PrivacyMaskLayer"
+                IsHitTestVisible="False"
+                Visibility="Collapsed">
+            <Border x:Name="PrivacyTopCover"
+                    Background="#FF050505" />
+            <Border x:Name="PrivacyBodyCover"
+                    Background="#FF050505" />
+        </Canvas>
     </Grid>
 </Window>

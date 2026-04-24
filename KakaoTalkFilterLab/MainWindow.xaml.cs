@@ -10,6 +10,8 @@ using KakaoTalkFilterLab.Models;
 using KakaoTalkFilterLab.Native;
 using KakaoTalkFilterLab.Services;
 using Microsoft.Win32;
+using Forms = System.Windows.Forms;
+using Drawing = System.Drawing;
 
 namespace KakaoTalkFilterLab;
 
@@ -48,6 +50,8 @@ public partial class MainWindow : Window
     private nint _overlayOwnerHandle;
     private DateTime _lastAutoExportUtc = DateTime.MinValue;
     private bool _isUpdatingParameterUi;
+    private bool _isExitRequested;
+    private Forms.NotifyIcon? _trayIcon;
     private double _dimOpacityValue = DefaultDimOpacity;
     private bool _isPrivacyModeEnabled;
     private readonly FilterTuning _invertTuning = new();
@@ -96,19 +100,106 @@ public partial class MainWindow : Window
             SavePersistedState();
             _timer.Stop();
             UnregisterPrivacyModeHotKey();
+            _trayIcon?.Dispose();
             _windowsGraphicsCaptureService.Dispose();
             _overlayWindow.Close();
         };
 
+        Closing += MainWindowClosing;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         SourceInitialized += OnSourceInitialized;
+        InitializeTrayIcon();
     }
 
+    private void InitializeTrayIcon()
+    {
+        var menu = new Forms.ContextMenuStrip();
+        menu.Items.Add("Open", null, (_, _) => RestoreFromTray());
+        menu.Items.Add("Exit", null, (_, _) => ExitApplication());
+
+        _trayIcon = new Forms.NotifyIcon
+        {
+            Text = "KakaoTalk Filter Lab",
+            Icon = Drawing.SystemIcons.Application,
+            ContextMenuStrip = menu,
+            Visible = true
+        };
+        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+    private void MainWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (_isExitRequested)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        Hide();
+        _trayIcon?.ShowBalloonTip(1200, "KakaoTalk Filter Lab", "Still running in the system tray.", Forms.ToolTipIcon.Info);
+    }
+
+    private void RestoreFromTray()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    private void ExitApplication()
+    {
+        _isExitRequested = true;
+        Close();
+    }
     private void OnTick(object? sender, EventArgs e)
     {
         Refresh();
     }
 
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.VisualStyle)
+        {
+            ApplySystemTheme();
+        }
+    }
+
+    private void ApplySystemTheme()
+    {
+        var isDark = IsSystemAppThemeDark();
+        Resources["AppWindowBrush"] = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(isDark ? "#171A1F" : "#EEF1F4"));
+        Resources["AppTextBrush"] = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(isDark ? "#F2F4F7" : "#111827"));
+        Resources["AppSecondaryTextBrush"] = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(isDark ? "#AAB2C0" : "#667085"));
+        Resources["AppGridBackgroundBrush"] = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(isDark ? "#1F232A" : "#F6F8FA"));
+        Resources["AppGridBorderBrush"] = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(isDark ? "#343A46" : "#D4D9E1"));
+        Resources["AppGridRowBrush"] = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(isDark ? "#1F232A" : "#F6F8FA"));
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != nint.Zero)
+        {
+            Win32.SetImmersiveDarkMode(hwnd, isDark);
+        }
+    }
+
+    private static bool IsSystemAppThemeDark()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int value && value == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
         Refresh();
@@ -553,12 +644,14 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         base.OnClosed(e);
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         RegisterPrivacyModeHotKey();
+        ApplySystemTheme();
 
         var source = PresentationSource.FromVisual(this) as HwndSource;
         source?.AddHook(WndProc);

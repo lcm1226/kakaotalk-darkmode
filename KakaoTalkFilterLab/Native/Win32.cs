@@ -7,6 +7,8 @@ namespace KakaoTalkFilterLab.Native;
 internal static class Win32
 {
     private const uint DwmwaExtendedFrameBounds = 9;
+    private const uint DwmwaUseImmersiveDarkMode = 20;
+    private const uint DwmwaUseImmersiveDarkModeBefore20H1 = 19;
     private const int GwlExstyle = -20;
     private const int WsExTransparent = 0x20;
     private const int WsExToolwindow = 0x80;
@@ -51,6 +53,9 @@ internal static class Win32
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(nint hwnd, uint dwAttribute, out RECT pvAttribute, int cbAttribute);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(nint hwnd, uint dwAttribute, ref int pvAttribute, int cbAttribute);
 
     [DllImport("user32.dll")]
     private static extern nint GetDC(nint hwnd);
@@ -98,6 +103,19 @@ internal static class Win32
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(nint hwnd, int id);
 
+    public static void SetImmersiveDarkMode(nint hwnd, bool enabled)
+    {
+        if (hwnd == nint.Zero)
+        {
+            return;
+        }
+
+        var value = enabled ? 1 : 0;
+        if (DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref value, sizeof(int)) != 0)
+        {
+            _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkModeBefore20H1, ref value, sizeof(int));
+        }
+    }
     public static IReadOnlyList<WindowInfo> EnumerateVisibleWindowsForProcess(string processName)
     {
         var results = new List<WindowInfo>();

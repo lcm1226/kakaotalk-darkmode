@@ -1,27 +1,26 @@
-# Codex Continuity
+﻿# Codex Continuity
 
 ## Current Status
 - WPF project: `KakaoTalkFilterLab`
 - AHK prototype is intentionally untouched.
 - Main focus remains `Smart` mode profile-avatar preservation.
 
+## Important Paths
+- Build output to run: `KakaoTalkFilterLab/bin/Debug/net8.0-windows10.0.19041.0/KakaoTalkFilterLab.exe`
+- Live captures: `KakaoTalkFilterLab/captures`
+- KakaoTalk PC install checked: `C:/Program Files (x86)/Kakao/KakaoTalk`
+
 ## What Was Verified
-- Live capture/export is working again.
-- `KakaoTalkFilterLab/captures/report.txt` now shows both:
-  - target window bounds
-  - actual captured frame size
-- Recent live logs showed repeated successful capture with:
-  - `Capture=WGC active`
-  - `Bounds=594x813`
-  - `Frame=594x813`
-- On current live `friends` frame, profile-photo interiors appear preserved instead of being fully inverted.
-- Saved validation frames that are currently useful:
-  - `KakaoTalkFilterLab/captures/case-friends-1/source.png`
-  - `KakaoTalkFilterLab/captures/case-friends-1/smart.png`
-  - `KakaoTalkFilterLab/captures/case-chat-1/source.png`
-  - `KakaoTalkFilterLab/captures/case-chat-1/smart.png`
-  - `KakaoTalkFilterLab/captures/case-chat-2/source.png`
-  - `KakaoTalkFilterLab/captures/case-chat-2/smart.png`
+- Live capture/export works with `WGC active`.
+- `report.txt` records target bounds and actual frame size.
+- The Filter Lab app now follows Windows app light/dark mode and closes to tray instead of exiting.
+- KakaoTalk PC resources expose the official profile squircle path at:
+  - `skin/default/image/profileShapeSquircleSVGs/Combined/profileShpeSquircleOne.svg`
+- `Resource.xml` maps default profile resources to squircle thumbnail IDs:
+  - `img_profile44_01`
+  - `img_profile40_01`
+  - `img_profile36_01`
+- Main layout XML files in the install folder are not readable as plain coordinate specs, so exact slot bounds still need runtime bitmap/layout inference.
 
 ## Key Code Areas
 - Capture validation and export:
@@ -31,27 +30,23 @@
 - Smart avatar preservation logic:
   - `KakaoTalkFilterLab/Services/WindowCaptureService.cs`
 
-## Important Recent Changes
-- Added invalid-size rejection for bad WGC frames before accepting them.
-- Export report now records `Frame=width,height`.
-- Smart avatar preservation currently restores original pixels for preserved avatar/photo regions rather than partial color blending.
-- Avatar handling is layout-first:
-  - left list avatars
-  - thumbnail row avatars
+## Current Smart Strategy
+- Detect likely profile slots first.
+- Use color/texture components only as evidence that a profile image exists in the slot.
+- Preserve original pixels inside a Kakao official squircle shape for profile slots.
+- Keep non-profile UI icons excluded.
 
 ## Remaining Work
-1. Verify thumbnail-row photo avatars on a fresh live `friends` frame.
-2. Reduce outer white fringe on avatars without damaging inner logo/photo detail.
-3. Re-check both:
-   - `friends` tab
-   - `chat` tab
-4. If still stable, keep the current preservation behavior and only tune fringe logic.
+1. Verify official squircle masking on fresh live chat and friends frames.
+2. If profile photos/logos still invert inconsistently, switch detected profile slots to slot-fill preservation instead of component-proximity preservation.
+3. Reduce the outer 1px light fringe without damaging inner photo/logo detail.
+4. Re-check chat tab and friends tab before committing future Smart tuning changes.
 
 ## Build / Run
 - Build:
-  - `dotnet build .\\KakaoTalkFilterLab\\KakaoTalkFilterLab.csproj`
+  - `dotnet build .\KakaoTalkFilterLab\KakaoTalkFilterLab.csproj`
 - Run:
-  - `KakaoTalkFilterLab\\bin\\Debug\\net8.0-windows10.0.19041.0\\KakaoTalkFilterLab.exe`
+  - `KakaoTalkFilterLab\bin\Debug\net8.0-windows10.0.19041.0\KakaoTalkFilterLab.exe`
 
 ## How To Resume After Folder Move
 - Open the moved workspace root.

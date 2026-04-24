@@ -10,9 +10,25 @@
         MinWidth="760"
         MinHeight="520"
         WindowStartupLocation="CenterScreen"
-        Background="#EEF1F4"
+        Background="{DynamicResource AppWindowBrush}"
         FontFamily="Pretendard Variable, Pretendard, Segoe UI"
-        FontWeight="SemiBold">
+        FontWeight="SemiBold"
+        TextElement.Foreground="{DynamicResource AppTextBrush}">
+    <Window.Resources>
+        <SolidColorBrush x:Key="AppWindowBrush" Color="#EEF1F4" />
+        <SolidColorBrush x:Key="AppTextBrush" Color="#111827" />
+        <SolidColorBrush x:Key="AppSecondaryTextBrush" Color="#667085" />
+        <SolidColorBrush x:Key="AppGridBackgroundBrush" Color="#F6F8FA" />
+        <SolidColorBrush x:Key="AppGridBorderBrush" Color="#D4D9E1" />
+        <SolidColorBrush x:Key="AppGridRowBrush" Color="#F6F8FA" />
+        <Style TargetType="{x:Type TextBlock}">
+            <Setter Property="Foreground" Value="{DynamicResource AppTextBrush}" />
+        </Style>
+        <Style TargetType="{x:Type DataGrid}">
+            <Setter Property="Foreground" Value="{DynamicResource AppTextBrush}" />
+        </Style>
+    </Window.Resources>
+
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -25,7 +41,7 @@
         <StackPanel>
             <TextBlock FontSize="20" FontWeight="SemiBold" Text="KakaoTalk Filter Lab" />
             <TextBlock Margin="0,6,0,0"
-                       Foreground="#666"
+                       Foreground="{DynamicResource AppSecondaryTextBrush}"
                        Text="Phase 2 for the native prototype: track the KakaoTalk main window and attach a click-through dim overlay before attempting color processing." />
         </StackPanel>
 
@@ -214,13 +230,13 @@
             <DataGrid x:Name="CandidatesGrid"
                       Grid.Row="2"
                       AutoGenerateColumns="False"
-                      Background="#F6F8FA"
-                      BorderBrush="#D4D9E1"
+                      Background="{DynamicResource AppGridBackgroundBrush}"
+                      BorderBrush="{DynamicResource AppGridBorderBrush}"
                       CanUserAddRows="False"
                       CanUserDeleteRows="False"
                       HeadersVisibility="Column"
                       IsReadOnly="True"
-                      RowBackground="#F6F8FA"
+                      RowBackground="{DynamicResource AppGridBackgroundBrush}"
                       RowHeaderWidth="0"
                       SelectionMode="Single">
                 <DataGrid.Columns>

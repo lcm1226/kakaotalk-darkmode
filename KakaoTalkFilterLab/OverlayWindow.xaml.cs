@@ -26,7 +26,7 @@ public partial class OverlayWindow : Window
     {
         CaptureImage.Source = null;
         CaptureImage.Visibility = Visibility.Collapsed;
-        DimFill.Background = new SolidColorBrush(Color.FromArgb(alpha, 0, 0, 0));
+        DimFill.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(alpha, 0, 0, 0));
         DimFill.Visibility = Visibility.Visible;
     }
 

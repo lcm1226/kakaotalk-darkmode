@@ -10,7 +10,7 @@ namespace KakaoTalkFilterLab.Services;
 
 internal sealed class WindowCaptureService
 {
-    private static readonly Geometry KakaoProfileGeometry40 = CreateKakaoProfileGeometry40();
+    private static readonly Geometry KakaoProfileSquircleGeometry = CreateKakaoProfileSquircleGeometry();
 
     public BitmapSource? Capture(WindowInfo window)
     {
@@ -162,9 +162,208 @@ internal sealed class WindowCaptureService
                 }
 
                 var index = y * stride + x * 4;
-                outputPixels[index] = originalPixels[index];
-                outputPixels[index + 1] = originalPixels[index + 1];
-                outputPixels[index + 2] = originalPixels[index + 2];
+                var blue = originalPixels[index];
+                var green = originalPixels[index + 1];
+                var red = originalPixels[index + 2];
+                var preserveIndex = y * converted.PixelWidth + x;
+                var photoPreserveStrength = Math.Clamp(
+                    GetPreserveStrength(photoPreserveStrengthMap, converted.PixelWidth, converted.PixelHeight, x, y) * photoComponentStrength,
+                    0.0,
+                    1.0);
+                var isDefaultAvatarPixel = defaultAvatarMask[preserveIndex];
+                var isNormalizedAvatarPixel = normalizedAvatarMask[preserveIndex];
+                var isThumbnailAvatarPixel = thumbnailAvatarMask[preserveIndex];
+                var isMainAvatarPixel = mainAvatarMask[preserveIndex];
+                var isLogoLikeMainAvatarPixel = logoLikeMainAvatarMask[preserveIndex];
+                var activeAvatarMask = isDefaultAvatarPixel
+                    ? defaultAvatarMask
+                    : isNormalizedAvatarPixel
+                        ? normalizedAvatarMask
+                        : isThumbnailAvatarPixel
+                            ? thumbnailAvatarMask
+                            : isLogoLikeMainAvatarPixel
+                                ? logoLikeMainAvatarMask
+                                : isMainAvatarPixel
+                                    ? mainAvatarMask
+                                    : photoCandidateMask;
+                var coveredAvatarNeighbors = 0;
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, converted.PixelWidth, converted.PixelHeight, 1))
+                {
+                    if (activeAvatarMask[ny * converted.PixelWidth + nx])
+                    {
+                        coveredAvatarNeighbors++;
+                    }
+                }
+
+                if (coveredAvatarNeighbors < 8)
+                {
+                    var edgeOpacity = Math.Pow(Math.Clamp(coveredAvatarNeighbors / 8.0, 0.0, 1.0), 1.8);
+                    photoPreserveStrength *= edgeOpacity;
+                }
+
+                if (isDefaultAvatarPixel &&
+                    ShouldSkipSmallAvatarEdgePixel(
+                        originalPixels,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        photoComponentStrength))
+                {
+                    GetBoundaryCorrectedColor(
+                        originalPixels,
+                        defaultAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        0.92,
+                        0.72,
+                        true,
+                        ref red,
+                        ref green,
+                        ref blue);
+                }
+                else if (isNormalizedAvatarPixel &&
+                    ShouldSkipNormalizedAvatarFringePixel(
+                        originalPixels,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        photoComponentStrength))
+                {
+                    GetBoundaryCorrectedColor(
+                        originalPixels,
+                        normalizedAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        0.90,
+                        0.66,
+                        true,
+                        ref red,
+                        ref green,
+                        ref blue);
+                }
+                else if (isThumbnailAvatarPixel &&
+                    ShouldSkipThumbnailAvatarFringePixel(
+                        originalPixels,
+                        thumbnailAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride))
+                {
+                    GetBoundaryCorrectedColor(
+                        originalPixels,
+                        thumbnailAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        0.88,
+                        0.62,
+                        true,
+                        ref red,
+                        ref green,
+                        ref blue);
+                }
+                else if (isLogoLikeMainAvatarPixel &&
+                    ShouldSkipLogoLikeMainAvatarFringePixel(
+                        originalPixels,
+                        logoLikeMainAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride))
+                {
+                    GetBoundaryCorrectedColor(
+                        originalPixels,
+                        logoLikeMainAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        0.84,
+                        0.58,
+                        true,
+                        ref red,
+                        ref green,
+                        ref blue);
+                }
+                else if (isMainAvatarPixel &&
+                    ShouldSkipMainAvatarFringePixel(
+                        originalPixels,
+                        mainAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        photoComponentStrength))
+                {
+                    GetBoundaryCorrectedColor(
+                        originalPixels,
+                        mainAvatarMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        0.86,
+                        0.60,
+                        true,
+                        ref red,
+                        ref green,
+                        ref blue);
+                }
+                else if (ShouldSkipPhotoPreservePixel(
+                    originalPixels,
+                    converted.PixelWidth,
+                    converted.PixelHeight,
+                    x,
+                    y,
+                    stride,
+                    photoComponentStrength))
+                {
+                    GetBoundaryCorrectedColor(
+                        originalPixels,
+                        photoCandidateMask,
+                        converted.PixelWidth,
+                        converted.PixelHeight,
+                        x,
+                        y,
+                        stride,
+                        0.82,
+                        0.54,
+                        true,
+                        ref red,
+                        ref green,
+                        ref blue);
+                }
+
+                if (photoPreserveStrength >= 0.995)
+                {
+                    outputPixels[index] = blue;
+                    outputPixels[index + 1] = green;
+                    outputPixels[index + 2] = red;
+                }
+                else
+                {
+                    outputPixels[index] = BlendChannel(outputPixels[index], blue, photoPreserveStrength);
+                    outputPixels[index + 1] = BlendChannel(outputPixels[index + 1], green, photoPreserveStrength);
+                    outputPixels[index + 2] = BlendChannel(outputPixels[index + 2], red, photoPreserveStrength);
+                }
             }
         }
 
@@ -1037,6 +1236,14 @@ internal sealed class WindowCaptureService
             }
         }
 
+        AddMonochromeLeftListAvatarSlots(
+            pixels,
+            width,
+            height,
+            stride,
+            preserveStrengthMap,
+            mainAvatarMask);
+
         var tightenedLogoLikeMainAvatarMask = (bool[])logoLikeMainAvatarMask.Clone();
         ErodeSmallLogoAvatarMask(tightenedLogoLikeMainAvatarMask, width, height);
         for (var i = 0; i < logoLikeMainAvatarMask.Length; i++)
@@ -1054,6 +1261,207 @@ internal sealed class WindowCaptureService
         return (preserveStrengthMap, defaultAvatarMask, normalizedAvatarMask, thumbnailAvatarMask, mainAvatarMask, logoLikeMainAvatarMask);
     }
 
+    private static void AddMonochromeLeftListAvatarSlots(
+        byte[] pixels,
+        int width,
+        int height,
+        int stride,
+        double[] preserveStrengthMap,
+        bool[] mainAvatarMask)
+    {
+        var minScanX = Math.Max(0, (int)Math.Round(width * 0.15));
+        var maxScanX = Math.Min(width - 1, (int)Math.Round(width * 0.29));
+        var minScanY = Math.Max(120, (int)Math.Round(height * 0.15));
+        var candidateMask = new bool[width * height];
+
+        for (var y = minScanY; y < height; y++)
+        {
+            for (var x = minScanX; x <= maxScanX; x++)
+            {
+                if (IsMonochromeAvatarContentPixel(pixels, width, height, x, y, stride))
+                {
+                    candidateMask[y * width + x] = true;
+                }
+            }
+        }
+
+        var visited = new bool[candidateMask.Length];
+        var queue = new Queue<int>();
+        var component = new List<int>();
+        for (var start = 0; start < candidateMask.Length; start++)
+        {
+            if (!candidateMask[start] || visited[start])
+            {
+                continue;
+            }
+
+            queue.Clear();
+            component.Clear();
+            visited[start] = true;
+            queue.Enqueue(start);
+
+            var minX = start % width;
+            var maxX = minX;
+            var minY = start / width;
+            var maxY = minY;
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                component.Add(current);
+                var x = current % width;
+                var y = current / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                {
+                    if (nx < minScanX || nx > maxScanX || ny < minScanY)
+                    {
+                        continue;
+                    }
+
+                    var neighbor = ny * width + nx;
+                    if (!candidateMask[neighbor] || visited[neighbor])
+                    {
+                        continue;
+                    }
+
+                    visited[neighbor] = true;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            var componentWidth = maxX - minX + 1;
+            var componentHeight = maxY - minY + 1;
+            var centerX = (minX + maxX) / 2.0;
+            var centerY = (minY + maxY) / 2.0;
+            if (!ShouldInferLeftListAvatarSlot(component.Count, componentWidth, componentHeight, centerX, centerY, width, height) ||
+                !HasAdjacentAvatarRowText(pixels, width, height, stride, centerY))
+            {
+                continue;
+            }
+
+            var centerIndex = Math.Clamp((int)Math.Round(centerY), 0, height - 1) * width + Math.Clamp((int)Math.Round(centerX), 0, width - 1);
+            if (preserveStrengthMap[centerIndex] >= 0.75)
+            {
+                continue;
+            }
+
+            var slotSize = centerX >= width * 0.222 ? 55 : 50;
+            var slotCenterX = slotSize >= 55 ? 134.0 : 131.5;
+            if (width != 594)
+            {
+                slotCenterX = centerX;
+            }
+
+            var left = Math.Clamp((int)Math.Round(slotCenterX - ((slotSize - 1) / 2.0)), 0, width - slotSize);
+            var top = Math.Clamp((int)Math.Round(centerY - ((slotSize - 1) / 2.0)), 0, height - slotSize);
+            for (var y = top; y < top + slotSize; y++)
+            {
+                for (var x = left; x < left + slotSize; x++)
+                {
+                    var coverage = GetAvatarShapeCoverage(x, y, left, top, slotSize, slotSize, 0, AvatarShape.KakaoProfile);
+                    if (coverage <= 0)
+                    {
+                        continue;
+                    }
+
+                    var preserveIndex = y * width + x;
+                    preserveStrengthMap[preserveIndex] = Math.Max(preserveStrengthMap[preserveIndex], coverage);
+                    mainAvatarMask[preserveIndex] = true;
+                }
+            }
+        }
+    }
+
+    private static bool HasAdjacentAvatarRowText(byte[] pixels, int width, int height, int stride, double centerY)
+    {
+        var minY = Math.Max(0, (int)Math.Round(centerY) - 22);
+        var maxY = Math.Min(height - 1, (int)Math.Round(centerY) + 22);
+        var minX = Math.Min(width - 1, 174);
+        var maxX = Math.Min(width - 1, 430);
+        var textLikePixels = 0;
+
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var index = y * stride + x * 4;
+                var blue = pixels[index];
+                var green = pixels[index + 1];
+                var red = pixels[index + 2];
+                var luminance = GetLuminance(red, green, blue);
+                var chroma = GetChroma(red, green, blue);
+                if (luminance <= 175 || chroma >= 42)
+                {
+                    textLikePixels++;
+                    if (textLikePixels >= 18)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+    private static bool IsMonochromeAvatarContentPixel(byte[] pixels, int width, int height, int x, int y, int stride)
+    {
+        var index = y * stride + x * 4;
+        var blue = pixels[index];
+        var green = pixels[index + 1];
+        var red = pixels[index + 2];
+        var luminance = GetLuminance(red, green, blue);
+        var chroma = GetChroma(red, green, blue);
+        if (chroma >= 24 || luminance <= 226)
+        {
+            return true;
+        }
+
+        return GetLocalTexture(pixels, width, height, x, y, stride) >= 14;
+    }
+
+    private static bool ShouldInferLeftListAvatarSlot(
+        int area,
+        int componentWidth,
+        int componentHeight,
+        double centerX,
+        double centerY,
+        int frameWidth,
+        int frameHeight)
+    {
+        if (area < 18 || componentWidth < 4 || componentHeight < 4)
+        {
+            return false;
+        }
+
+        if (componentWidth > 62 || componentHeight > 62)
+        {
+            return false;
+        }
+
+        var xRatio = centerX / frameWidth;
+        var yRatio = centerY / frameHeight;
+        if (xRatio < 0.16 || xRatio > 0.27 || yRatio < 0.16 || yRatio > 0.94)
+        {
+            return false;
+        }
+
+        var expectedCenterX = centerX >= frameWidth * 0.222 ? 134.0 : 131.5;
+        if (frameWidth != 594)
+        {
+            expectedCenterX = frameWidth * 0.225;
+        }
+
+        if (Math.Abs(centerX - expectedCenterX) > 9.5 && componentWidth < 38 && componentHeight < 38)
+        {
+            return false;
+        }
+
+        return componentWidth >= 10 || componentHeight >= 10 || area >= 48;
+    }
     private static bool ShouldKeepComponent(
         int area,
         int width,
@@ -1781,7 +2189,6 @@ internal sealed class WindowCaptureService
             }
         }
 
-        // Only correct edge pixels; interior pixels should stay untouched.
         if (coveredNeighbors >= 8)
         {
             return;
@@ -1791,12 +2198,8 @@ internal sealed class WindowCaptureService
         var redSum = 0.0;
         var greenSum = 0.0;
         var blueSum = 0.0;
-        var preferredSampleCount = 0;
-        var preferredRedSum = 0.0;
-        var preferredGreenSum = 0.0;
-        var preferredBlueSum = 0.0;
 
-        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 2))
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 3))
         {
             if (!mask[ny * width + nx])
             {
@@ -1812,28 +2215,46 @@ internal sealed class WindowCaptureService
                 }
             }
 
-            if (neighborCovered < 7)
+            if (neighborCovered < 8)
             {
                 continue;
             }
 
             var neighborIndex = ny * stride + nx * 4;
-            var neighborBlue = pixels[neighborIndex];
-            var neighborGreen = pixels[neighborIndex + 1];
-            var neighborRed = pixels[neighborIndex + 2];
-            blueSum += neighborBlue;
-            greenSum += neighborGreen;
-            redSum += neighborRed;
+            blueSum += pixels[neighborIndex];
+            greenSum += pixels[neighborIndex + 1];
+            redSum += pixels[neighborIndex + 2];
             sampleCount++;
+        }
 
-            var neighborLuminance = GetLuminance(neighborRed, neighborGreen, neighborBlue);
-            var neighborChroma = GetChroma(neighborRed, neighborGreen, neighborBlue);
-            if (neighborLuminance <= GetLuminance(red, green, blue) - 6 || neighborChroma >= GetChroma(red, green, blue) + 6)
+        if (sampleCount == 0)
+        {
+            foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 2))
             {
-                preferredBlueSum += neighborBlue;
-                preferredGreenSum += neighborGreen;
-                preferredRedSum += neighborRed;
-                preferredSampleCount++;
+                if (!mask[ny * width + nx])
+                {
+                    continue;
+                }
+
+                var neighborCovered = 0;
+                foreach (var (nnx, nny) in EnumerateNeighborCoordinates(nx, ny, width, height, 1))
+                {
+                    if (mask[nny * width + nnx])
+                    {
+                        neighborCovered++;
+                    }
+                }
+
+                if (neighborCovered < 7)
+                {
+                    continue;
+                }
+
+                var neighborIndex = ny * stride + nx * 4;
+                blueSum += pixels[neighborIndex];
+                greenSum += pixels[neighborIndex + 1];
+                redSum += pixels[neighborIndex + 2];
+                sampleCount++;
             }
         }
 
@@ -1842,39 +2263,70 @@ internal sealed class WindowCaptureService
             return;
         }
 
-        var averageRed = preferredSampleCount > 0 ? preferredRedSum / preferredSampleCount : redSum / sampleCount;
-        var averageGreen = preferredSampleCount > 0 ? preferredGreenSum / preferredSampleCount : greenSum / sampleCount;
-        var averageBlue = preferredSampleCount > 0 ? preferredBlueSum / preferredSampleCount : blueSum / sampleCount;
+        var averageRed = ClampToByte(redSum / sampleCount);
+        var averageGreen = ClampToByte(greenSum / sampleCount);
+        var averageBlue = ClampToByte(blueSum / sampleCount);
         var currentLuminance = GetLuminance(red, green, blue);
-        var averageLuminance = GetLuminance(
-            ClampToByte(averageRed),
-            ClampToByte(averageGreen),
-            ClampToByte(averageBlue));
+        var averageLuminance = GetLuminance(averageRed, averageGreen, averageBlue);
         var currentChroma = GetChroma(red, green, blue);
-        var averageChroma = GetChroma(
-            ClampToByte(averageRed),
-            ClampToByte(averageGreen),
-            ClampToByte(averageBlue));
+        var averageChroma = GetChroma(averageRed, averageGreen, averageBlue);
+        var boundarySeverity = 1.0 - (coveredNeighbors / 8.0);
 
-        if (currentLuminance <= averageLuminance + 6 && currentChroma >= averageChroma - 6)
+        if (replaceBrightBoundary && currentLuminance >= averageLuminance + 1)
         {
+            var matteAlphaSum = 0.0;
+            var matteAlphaCount = 0;
+            foreach (var (current, average) in new[]
+                     {
+                         ((double)red, (double)averageRed),
+                         ((double)green, (double)averageGreen),
+                         ((double)blue, (double)averageBlue)
+                     })
+            {
+                if (average >= 250 || current < average)
+                {
+                    continue;
+                }
+
+                var alpha = (255.0 - current) / (255.0 - average);
+                if (double.IsNaN(alpha) || double.IsInfinity(alpha))
+                {
+                    continue;
+                }
+
+                matteAlphaSum += Math.Clamp(alpha, 0.0, 1.0);
+                matteAlphaCount++;
+            }
+
+            var matteAlpha = matteAlphaCount > 0
+                ? Math.Clamp(matteAlphaSum / matteAlphaCount, 0.0, 1.0)
+                : 1.0;
+            matteAlpha *= matteAlpha;
+            var targetRed = ClampToByte(averageRed * matteAlpha);
+            var targetGreen = ClampToByte(averageGreen * matteAlpha);
+            var targetBlue = ClampToByte(averageBlue * matteAlpha);
+            red = targetRed;
+            green = targetGreen;
+            blue = targetBlue;
             return;
         }
 
-        if (replaceBrightBoundary &&
-            currentLuminance >= averageLuminance + 6 &&
-            currentChroma <= averageChroma + 36)
+        var luminanceGap = Math.Max(0.0, currentLuminance - averageLuminance);
+        var chromaGap = Math.Max(0.0, averageChroma - currentChroma);
+        var blend = softBlend + boundarySeverity * (strongBlend - softBlend);
+        if (luminanceGap >= 6 || chromaGap >= 10)
         {
-            red = ClampToByte(averageRed);
-            green = ClampToByte(averageGreen);
-            blue = ClampToByte(averageBlue);
-            return;
+            blend = Math.Max(blend, strongBlend);
+        }
+        else
+        {
+            blend = Math.Max(blend, softBlend + 0.16);
         }
 
-        var blend = currentLuminance > averageLuminance + 18 ? strongBlend : softBlend;
-        red = BlendChannel(red, ClampToByte(averageRed), blend);
-        green = BlendChannel(green, ClampToByte(averageGreen), blend);
-        blue = BlendChannel(blue, ClampToByte(averageBlue), blend);
+        blend = Math.Clamp(blend, 0.0, 1.0);
+        red = BlendChannel(red, averageRed, blend);
+        green = BlendChannel(green, averageGreen, blend);
+        blue = BlendChannel(blue, averageBlue, blend);
     }
 
     private static bool HasNearbyComponentPixel(
@@ -2384,9 +2836,9 @@ internal sealed class WindowCaptureService
             return false;
         }
 
-        var localX = ((x - left) / width) * 40.0;
-        var localY = ((y - top) / height) * 40.0;
-        return KakaoProfileGeometry40.FillContains(new Point(localX, localY));
+        var localX = ((x - left) / width) * 384.0;
+        var localY = ((y - top) / height) * 384.0;
+        return KakaoProfileSquircleGeometry.FillContains(new System.Windows.Point(localX, localY));
     }
 
     private enum AvatarShape
@@ -2398,9 +2850,11 @@ internal sealed class WindowCaptureService
         SquircleStrong
     }
 
-    private static Geometry CreateKakaoProfileGeometry40()
+    private static Geometry CreateKakaoProfileSquircleGeometry()
     {
-        var geometry = Geometry.Parse("M0.5 20C0.5 12.5277 1.75183 7.70527 4.72855 4.72855C7.70527 1.75183 12.5277 0.5 20 0.5C27.4723 0.5 32.2947 1.75183 35.2715 4.72855C38.2482 7.70527 39.5 12.5277 39.5 20C39.5 27.4723 38.2482 32.2947 35.2715 35.2715C32.2947 38.2482 27.4723 39.5 20 39.5C12.5277 39.5 7.70527 38.2482 4.72855 35.2715C1.75183 32.2947 0.5 27.4723 0.5 20Z");
+        // KakaoTalk PC ships this exact profile shape at:
+        // skin/default/image/profileShapeSquircleSVGs/Combined/profileShpeSquircleOne.svg
+        var geometry = Geometry.Parse("M384 192C384 333.333 333.333 384 192 384C50.667 384 0 333.333 0 192C0 56 50.667 0 192 0C333.333 0 384 50.667 384 192Z");
         geometry.Freeze();
         return geometry;
     }

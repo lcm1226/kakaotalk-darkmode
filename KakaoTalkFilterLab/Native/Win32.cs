@@ -6,6 +6,7 @@ namespace KakaoTalkFilterLab.Native;
 
 internal static class Win32
 {
+    private const uint DwmwaExtendedFrameBounds = 9;
     private const int GwlExstyle = -20;
     private const int WsExTransparent = 0x20;
     private const int WsExToolwindow = 0x80;
@@ -47,6 +48,9 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(nint hwnd, out RECT rect);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(nint hwnd, uint dwAttribute, out RECT pvAttribute, int cbAttribute);
 
     [DllImport("user32.dll")]
     private static extern nint GetDC(nint hwnd);
@@ -125,7 +129,7 @@ internal static class Win32
                 return true;
             }
 
-            if (!GetWindowRect(hwnd, out var rect))
+            if (!TryGetWindowBounds(hwnd, out var rect))
             {
                 return true;
             }
@@ -229,5 +233,17 @@ internal static class Win32
         {
             _ = DeleteObject(handle);
         }
+    }
+
+    private static bool TryGetWindowBounds(nint hwnd, out RECT rect)
+    {
+        if (DwmGetWindowAttribute(hwnd, DwmwaExtendedFrameBounds, out rect, Marshal.SizeOf<RECT>()) == 0 &&
+            rect.Right > rect.Left &&
+            rect.Bottom > rect.Top)
+        {
+            return true;
+        }
+
+        return GetWindowRect(hwnd, out rect);
     }
 }

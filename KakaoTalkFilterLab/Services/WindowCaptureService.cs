@@ -106,7 +106,7 @@ internal sealed class WindowCaptureService
         }
 
         var preserveStrengthMap = BuildPreserveStrengthMap(candidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
-        var (photoPreserveStrengthMap, defaultAvatarMask, normalizedAvatarMask) = BuildPhotoPreserveMaps(photoCandidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
+        var (photoPreserveStrengthMap, defaultAvatarMask, normalizedAvatarMask, thumbnailAvatarMask, mainAvatarMask, logoLikeMainAvatarMask) = BuildPhotoPreserveMaps(photoCandidateMask, originalPixels, converted.PixelWidth, converted.PixelHeight, stride);
 
         for (var y = 0; y < converted.PixelHeight; y++)
         {
@@ -162,29 +162,9 @@ internal sealed class WindowCaptureService
                 }
 
                 var index = y * stride + x * 4;
-                var photoPreserveStrength = GetPreserveStrength(photoPreserveStrengthMap, converted.PixelWidth, converted.PixelHeight, x, y) * photoComponentStrength;
-                if (photoPreserveStrength <= 0)
-                {
-                    continue;
-                }
-
-                if (defaultAvatarMask[y * converted.PixelWidth + x]
-                    ? ShouldSkipSmallAvatarEdgePixel(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride, photoPreserveStrength)
-                    : normalizedAvatarMask[y * converted.PixelWidth + x]
-                        ? ShouldSkipNormalizedAvatarFringePixel(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride, photoPreserveStrength)
-                        : ShouldSkipPhotoPreservePixel(originalPixels, converted.PixelWidth, converted.PixelHeight, x, y, stride, photoPreserveStrength))
-                {
-                    continue;
-                }
-
-                ApplyOriginalPreservedColor(
-                    ref outputPixels[index],
-                    ref outputPixels[index + 1],
-                    ref outputPixels[index + 2],
-                    originalPixels[index + 2],
-                    originalPixels[index + 1],
-                    originalPixels[index],
-                    photoPreserveStrength);
+                outputPixels[index] = originalPixels[index];
+                outputPixels[index + 1] = originalPixels[index + 1];
+                outputPixels[index + 2] = originalPixels[index + 2];
             }
         }
 
@@ -245,7 +225,7 @@ internal sealed class WindowCaptureService
             }
         }
 
-        var (_, defaultAvatarMask, _) = BuildPhotoPreserveMaps(
+        var (_, defaultAvatarMask, normalizedAvatarMask, thumbnailAvatarMask, mainAvatarMask, logoLikeMainAvatarMask) = BuildPhotoPreserveMaps(
             photoCandidateMask,
             pixels,
             converted.PixelWidth,
@@ -258,6 +238,21 @@ internal sealed class WindowCaptureService
         SavePng(
             CreateMaskBitmap(defaultAvatarMask, converted.PixelWidth, converted.PixelHeight, converted.DpiX, converted.DpiY),
             Path.Combine(outputDirectory, "debug-default-avatar-mask.png"));
+        SavePng(
+            CreateMaskBitmap(normalizedAvatarMask, converted.PixelWidth, converted.PixelHeight, converted.DpiX, converted.DpiY),
+            Path.Combine(outputDirectory, "debug-normalized-avatar-mask.png"));
+        SavePng(
+            CreateMaskBitmap(thumbnailAvatarMask, converted.PixelWidth, converted.PixelHeight, converted.DpiX, converted.DpiY),
+            Path.Combine(outputDirectory, "debug-thumbnail-avatar-mask.png"));
+        SavePng(
+            CreateMaskBitmap(mainAvatarMask, converted.PixelWidth, converted.PixelHeight, converted.DpiX, converted.DpiY),
+            Path.Combine(outputDirectory, "debug-main-avatar-mask.png"));
+        SavePng(
+            CreateMaskBitmap(logoLikeMainAvatarMask, converted.PixelWidth, converted.PixelHeight, converted.DpiX, converted.DpiY),
+            Path.Combine(outputDirectory, "debug-logo-main-avatar-mask.png"));
+        File.WriteAllText(
+            Path.Combine(outputDirectory, "debug-photo-components.txt"),
+            GetPhotoComponentDebugReport(photoCandidateMask, pixels, converted.PixelWidth, converted.PixelHeight, stride));
     }
 
     private static BitmapSource Transform(
@@ -611,7 +606,7 @@ internal sealed class WindowCaptureService
                 var max = Math.Max(red, Math.Max(green, blue));
                 saturationSum += max == 0 ? 0 : chroma / (double)max;
 
-                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 2))
                 {
                     var neighbor = ny * width + nx;
                     if (!candidateMask[neighbor] || visited[neighbor])
@@ -650,11 +645,14 @@ internal sealed class WindowCaptureService
         return preserveStrengthMap;
     }
 
-    private static (double[] preserveStrengthMap, bool[] defaultAvatarMask, bool[] normalizedAvatarMask) BuildPhotoPreserveMaps(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
+    private static (double[] preserveStrengthMap, bool[] defaultAvatarMask, bool[] normalizedAvatarMask, bool[] thumbnailAvatarMask, bool[] mainAvatarMask, bool[] logoLikeMainAvatarMask) BuildPhotoPreserveMaps(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
     {
         var preserveStrengthMap = new double[candidateMask.Length];
         var defaultAvatarMask = new bool[candidateMask.Length];
         var normalizedAvatarMask = new bool[candidateMask.Length];
+        var thumbnailAvatarMask = new bool[candidateMask.Length];
+        var mainAvatarMask = new bool[candidateMask.Length];
+        var logoLikeMainAvatarMask = new bool[candidateMask.Length];
         var visited = new bool[candidateMask.Length];
         var queue = new Queue<int>();
         var component = new List<int>();
@@ -704,7 +702,7 @@ internal sealed class WindowCaptureService
                 greenSum += green;
                 blueSum += blue;
 
-                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 2))
                 {
                     var neighbor = ny * width + nx;
                     if (!candidateMask[neighbor] || visited[neighbor])
@@ -726,9 +724,12 @@ internal sealed class WindowCaptureService
                     component.Count,
                     minX,
                     maxX,
+                    minY,
+                    maxY,
                     componentWidth,
                     componentHeight,
                     width,
+                    height,
                     fillRatio,
                     textureSum / component.Count,
                     chromaSum / component.Count))
@@ -738,6 +739,9 @@ internal sealed class WindowCaptureService
 
             var averageTexture = textureSum / component.Count;
             var averageChroma = chromaSum / component.Count;
+            var slotKind = GetAvatarSlotKind(minX, maxX, minY, maxY, componentWidth, componentHeight, width, height, fillRatio);
+            var isThumbnailRowSlot = slotKind == AvatarSlotKind.ThumbnailRow;
+            var isLayoutAvatarSlot = slotKind != AvatarSlotKind.None;
             var isFlatDefaultAvatar = IsFlatDefaultAvatarComponent(averageTexture, averageChroma);
             var componentStrength = GetPhotoComponentPreserveStrength(component.Count, componentWidth, componentHeight, fillRatio);
             var edgePadding = GetAvatarEdgePadding(componentWidth, componentHeight, fillRatio);
@@ -752,11 +756,26 @@ internal sealed class WindowCaptureService
                 height,
                 fillRatio,
                 edgePadding,
-                isFlatDefaultAvatar);
+                isFlatDefaultAvatar,
+                slotKind);
             var maskWidth = maskMaxX - maskMinX + 1;
             var maskHeight = maskMaxY - maskMinY + 1;
             var isNormalizedAvatarSlot = IsNormalizedAvatarSlot(maskWidth, maskHeight, componentWidth, componentHeight);
+            var isMainAvatarSlot = IsMainAvatarSlot(maskWidth, maskHeight, componentWidth, componentHeight);
+            var isLogoLikeMainAvatar =
+                isMainAvatarSlot &&
+                !isFlatDefaultAvatar &&
+                averageTexture < 20 &&
+                averageChroma >= 120;
             if (isFlatDefaultAvatar)
+            {
+                componentStrength = 1.0;
+            }
+            else if (isThumbnailRowSlot)
+            {
+                componentStrength = 1.0;
+            }
+            else if (isMainAvatarSlot)
             {
                 componentStrength = 1.0;
             }
@@ -765,6 +784,8 @@ internal sealed class WindowCaptureService
                 maskHeight,
                 fillRatio,
                 isNormalizedAvatarSlot,
+                isThumbnailRowSlot,
+                isMainAvatarSlot,
                 isFlatDefaultAvatar,
                 averageTexture,
                 averageChroma);
@@ -790,10 +811,31 @@ internal sealed class WindowCaptureService
             }
             else if (isNormalizedAvatarSlot)
             {
+                innerLeft = maskMinX + 3;
+                innerTop = maskMinY + 3;
+                innerWidth = Math.Max(1, maskWidth - 6);
+                innerHeight = Math.Max(1, maskHeight - 6);
+            }
+            else if (isThumbnailRowSlot)
+            {
                 innerLeft = maskMinX + 1;
                 innerTop = maskMinY + 1;
                 innerWidth = Math.Max(1, maskWidth - 2);
                 innerHeight = Math.Max(1, maskHeight - 2);
+            }
+            else if (isMainAvatarSlot)
+            {
+                innerLeft = maskMinX + 2;
+                innerTop = maskMinY + 2;
+                innerWidth = Math.Max(1, maskWidth - 4);
+                innerHeight = Math.Max(1, maskHeight - 4);
+                if (isLogoLikeMainAvatar)
+                {
+                    innerLeft += 1;
+                    innerTop += 1;
+                    innerWidth = Math.Max(1, innerWidth - 2);
+                    innerHeight = Math.Max(1, innerHeight - 2);
+                }
             }
             var cornerRadius = GetPhotoCornerRadius(innerWidth, innerHeight, fillRatio);
             if (isFlatDefaultAvatar)
@@ -850,6 +892,46 @@ internal sealed class WindowCaptureService
                     ErodeSmallLogoAvatarMask(componentMask, maskWidth, maskHeight);
                 }
             }
+            else if (isThumbnailRowSlot)
+            {
+                ExpandSmallAvatarComponentMask(
+                    componentMask,
+                    maskMinX,
+                    maskMinY,
+                    maskWidth,
+                    maskHeight,
+                    pixels,
+                    width,
+                    height,
+                    stride,
+                    redSum / component.Count,
+                    greenSum / component.Count,
+                    blueSum / component.Count);
+            }
+            else if (isMainAvatarSlot)
+            {
+                ExpandMainAvatarComponentMask(
+                    componentMask,
+                    maskMinX,
+                    maskMinY,
+                    maskWidth,
+                    maskHeight,
+                    pixels,
+                    width,
+                    height,
+                    stride,
+                    redSum / component.Count,
+                    greenSum / component.Count,
+                    blueSum / component.Count);
+
+                if (isLogoLikeMainAvatar)
+                {
+                    // Main logo avatars were preserving their anti-aliased outer ring too literally.
+                    // Tighten the component mask before coverage is applied so the preserved area
+                    // follows the actual logo body rather than the bright 1px fringe.
+                    ErodeSmallLogoAvatarMask(componentMask, maskWidth, maskHeight);
+                }
+            }
 
             var componentSearchRadius = GetAvatarComponentSearchRadius(
                 componentWidth,
@@ -858,7 +940,7 @@ internal sealed class WindowCaptureService
                 isNormalizedAvatarSlot,
                 isFlatDefaultAvatar,
                 shape);
-            var requiresComponentProximity = !isFlatDefaultAvatar;
+            var requiresComponentProximity = !isFlatDefaultAvatar && !isLayoutAvatarSlot;
 
             for (var y = maskMinY; y <= maskMaxY; y++)
             {
@@ -867,6 +949,55 @@ internal sealed class WindowCaptureService
                     var shapeCoverage = isFlatDefaultAvatar
                         ? GetComponentMaskCoverage(componentMask, maskMinX, maskMinY, maskWidth, maskHeight, x, y)
                         : GetAvatarShapeCoverage(x, y, innerLeft, innerTop, innerWidth, innerHeight, cornerRadius, shape);
+                    if (isNormalizedAvatarSlot && !isFlatDefaultAvatar && !isLayoutAvatarSlot)
+                    {
+                        var componentCoverage = GetComponentMaskCoverage(
+                            componentMask,
+                            maskMinX,
+                            maskMinY,
+                            maskWidth,
+                            maskHeight,
+                            x,
+                            y);
+                        shapeCoverage *= componentCoverage;
+                    }
+                    else if (isThumbnailRowSlot && !isLayoutAvatarSlot)
+                    {
+                        var componentCoverage = GetComponentMaskCoverage(
+                            componentMask,
+                            maskMinX,
+                            maskMinY,
+                            maskWidth,
+                            maskHeight,
+                            x,
+                            y);
+                        if (componentCoverage <= 0)
+                        {
+                            continue;
+                        }
+
+                        shapeCoverage *= Math.Max(0.72, componentCoverage);
+                    }
+                    else if (isMainAvatarSlot && !isFlatDefaultAvatar && !isLayoutAvatarSlot)
+                    {
+                        if (isLogoLikeMainAvatar)
+                        {
+                            var componentCoverage = GetComponentMaskCoverage(
+                                componentMask,
+                                maskMinX,
+                                maskMinY,
+                                maskWidth,
+                                maskHeight,
+                                x,
+                                y);
+                            if (componentCoverage < 0.82)
+                            {
+                                continue;
+                            }
+
+                            shapeCoverage = Math.Min(shapeCoverage, componentCoverage);
+                        }
+                    }
                     if (shapeCoverage <= 0)
                     {
                         continue;
@@ -890,11 +1021,37 @@ internal sealed class WindowCaptureService
                     {
                         normalizedAvatarMask[preserveIndex] = true;
                     }
+                    else if (isThumbnailRowSlot)
+                    {
+                        thumbnailAvatarMask[preserveIndex] = true;
+                    }
+                    else if (isMainAvatarSlot)
+                    {
+                        mainAvatarMask[preserveIndex] = true;
+                        if (isLogoLikeMainAvatar)
+                        {
+                            logoLikeMainAvatarMask[preserveIndex] = true;
+                        }
+                    }
                 }
             }
         }
 
-        return (preserveStrengthMap, defaultAvatarMask, normalizedAvatarMask);
+        var tightenedLogoLikeMainAvatarMask = (bool[])logoLikeMainAvatarMask.Clone();
+        ErodeSmallLogoAvatarMask(tightenedLogoLikeMainAvatarMask, width, height);
+        for (var i = 0; i < logoLikeMainAvatarMask.Length; i++)
+        {
+            if (!logoLikeMainAvatarMask[i] || tightenedLogoLikeMainAvatarMask[i])
+            {
+                continue;
+            }
+
+            logoLikeMainAvatarMask[i] = false;
+            mainAvatarMask[i] = false;
+            preserveStrengthMap[i] = 0;
+        }
+
+        return (preserveStrengthMap, defaultAvatarMask, normalizedAvatarMask, thumbnailAvatarMask, mainAvatarMask, logoLikeMainAvatarMask);
     }
 
     private static bool ShouldKeepComponent(
@@ -928,6 +1085,117 @@ internal sealed class WindowCaptureService
         return area >= 24 && width >= 5 && height >= 5 && fillRatio >= 0.70;
     }
 
+    private static string GetPhotoComponentDebugReport(bool[] candidateMask, byte[] pixels, int width, int height, int stride)
+    {
+        var lines = new List<string>();
+        var visited = new bool[candidateMask.Length];
+        var queue = new Queue<int>();
+        var component = new List<int>();
+
+        for (var start = 0; start < candidateMask.Length; start++)
+        {
+            if (!candidateMask[start] || visited[start])
+            {
+                continue;
+            }
+
+            queue.Clear();
+            component.Clear();
+
+            visited[start] = true;
+            queue.Enqueue(start);
+
+            var minX = start % width;
+            var maxX = minX;
+            var minY = start / width;
+            var maxY = minY;
+            var textureSum = 0.0;
+            var chromaSum = 0.0;
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                component.Add(current);
+
+                var x = current % width;
+                var y = current / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                var pixelIndex = y * stride + x * 4;
+                textureSum += GetLocalTexture(pixels, width, height, x, y, stride);
+                chromaSum += GetChroma(pixels[pixelIndex + 2], pixels[pixelIndex + 1], pixels[pixelIndex]);
+
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                {
+                    var neighbor = ny * width + nx;
+                    if (!candidateMask[neighbor] || visited[neighbor])
+                    {
+                        continue;
+                    }
+
+                    visited[neighbor] = true;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            var componentWidth = maxX - minX + 1;
+            var componentHeight = maxY - minY + 1;
+            var boundingArea = componentWidth * componentHeight;
+            var fillRatio = boundingArea == 0 ? 0 : component.Count / (double)boundingArea;
+            var averageTexture = textureSum / component.Count;
+            var averageChroma = chromaSum / component.Count;
+            var keep = ShouldKeepPhotoComponent(
+                component.Count,
+                minX,
+                maxX,
+                minY,
+                maxY,
+                componentWidth,
+                componentHeight,
+                width,
+                height,
+                fillRatio,
+                averageTexture,
+                averageChroma);
+
+            if (!keep)
+            {
+                continue;
+            }
+
+            var slotKind = GetAvatarSlotKind(minX, maxX, minY, maxY, componentWidth, componentHeight, width, height, fillRatio);
+            var isFlatDefaultAvatar = IsFlatDefaultAvatarComponent(averageTexture, averageChroma);
+            var edgePadding = GetAvatarEdgePadding(componentWidth, componentHeight, fillRatio);
+            var (maskMinX, maskMaxX, maskMinY, maskMaxY) = GetAvatarMaskBounds(
+                minX,
+                maxX,
+                minY,
+                maxY,
+                componentWidth,
+                componentHeight,
+                width,
+                height,
+                fillRatio,
+                edgePadding,
+                isFlatDefaultAvatar,
+                slotKind);
+            var maskWidth = maskMaxX - maskMinX + 1;
+            var maskHeight = maskMaxY - maskMinY + 1;
+            var isNormalizedAvatarSlot = IsNormalizedAvatarSlot(maskWidth, maskHeight, componentWidth, componentHeight);
+            var isMainAvatarSlot = IsMainAvatarSlot(maskWidth, maskHeight, componentWidth, componentHeight);
+            var centerX = (minX + maxX) / 2.0;
+            var centerY = (minY + maxY) / 2.0;
+
+            lines.Add(
+                $"area={component.Count}, bbox=({minX},{minY})-({maxX},{maxY}), size={componentWidth}x{componentHeight}, mask={maskWidth}x{maskHeight}, fill={fillRatio:F3}, tex={averageTexture:F2}, chroma={averageChroma:F2}, center=({centerX:F1},{centerY:F1}), slot={slotKind}, flat={isFlatDefaultAvatar}, normalized={isNormalizedAvatarSlot}, main={isMainAvatarSlot}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
     private static double GetComponentPreserveStrength(int area, int width, int height, double fillRatio)
     {
         if (area >= 120 && width >= 10 && height >= 10)
@@ -947,9 +1215,12 @@ internal sealed class WindowCaptureService
         int area,
         int minX,
         int maxX,
+        int minY,
+        int maxY,
         int width,
         int height,
         int frameWidth,
+        int frameHeight,
         double fillRatio,
         double averageTexture,
         double averageChroma)
@@ -965,24 +1236,8 @@ internal sealed class WindowCaptureService
             return false;
         }
 
-        var isSmallAvatarLike =
-            width >= 20 &&
-            width <= 56 &&
-            height >= 20 &&
-            height <= 56 &&
-            aspectRatio >= 0.78 &&
-            aspectRatio <= 1.28 &&
-            fillRatio >= 0.42;
-
-        var centerX = (minX + maxX) / 2.0;
-        if (isSmallAvatarLike)
-        {
-            if (centerX < frameWidth * 0.14 || centerX > frameWidth * 0.82)
-            {
-                return false;
-            }
-        }
-        else if (centerX < frameWidth * 0.10 || centerX > frameWidth * 0.33)
+        var slotKind = GetAvatarSlotKind(minX, maxX, minY, maxY, width, height, frameWidth, frameHeight, fillRatio);
+        if (slotKind == AvatarSlotKind.None)
         {
             return false;
         }
@@ -1003,6 +1258,64 @@ internal sealed class WindowCaptureService
         }
 
         return averageChroma >= 7 || averageTexture >= 11.5;
+    }
+
+    private enum AvatarSlotKind
+    {
+        None,
+        LeftList,
+        ThumbnailRow
+    }
+
+    private static AvatarSlotKind GetAvatarSlotKind(
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int width,
+        int height,
+        int frameWidth,
+        int frameHeight,
+        double fillRatio)
+    {
+        var centerX = (minX + maxX) / 2.0;
+        var centerY = (minY + maxY) / 2.0;
+        var xRatio = centerX / frameWidth;
+        var yRatio = centerY / frameHeight;
+        var aspectRatio = width / (double)height;
+        var isAvatarLikeShape =
+            width >= 18 &&
+            width <= 60 &&
+            height >= 18 &&
+            height <= 60 &&
+            aspectRatio >= 0.74 &&
+            aspectRatio <= 1.30 &&
+            fillRatio >= 0.40;
+
+        if (!isAvatarLikeShape)
+        {
+            return AvatarSlotKind.None;
+        }
+
+        var isLeftListAvatar =
+            xRatio >= 0.13 &&
+            xRatio <= 0.29 &&
+            width >= 40 &&
+            height >= 40;
+        if (isLeftListAvatar)
+        {
+            return AvatarSlotKind.LeftList;
+        }
+
+        var isThumbnailRowAvatar =
+            width <= 34 &&
+            height <= 34 &&
+            xRatio >= 0.12 &&
+            xRatio <= 0.62 &&
+            yRatio >= 0.22 &&
+            yRatio <= 0.50;
+
+        return isThumbnailRowAvatar ? AvatarSlotKind.ThumbnailRow : AvatarSlotKind.None;
     }
 
     private static double GetPhotoComponentPreserveStrength(int area, int width, int height, double fillRatio)
@@ -1038,16 +1351,17 @@ internal sealed class WindowCaptureService
         int frameHeight,
         double fillRatio,
         int edgePadding,
-        bool isFlatDefaultAvatar)
+        bool isFlatDefaultAvatar,
+        AvatarSlotKind slotKind)
     {
         var aspectRatio = componentWidth / (double)componentHeight;
         var shouldNormalizeToSlot =
-            componentWidth >= 30 &&
+            componentWidth >= 18 &&
             componentWidth <= 52 &&
-            componentHeight >= 30 &&
+            componentHeight >= 18 &&
             componentHeight <= 52 &&
-            aspectRatio >= 0.82 &&
-            aspectRatio <= 1.22;
+            aspectRatio >= 0.74 &&
+            aspectRatio <= 1.30;
 
         if (shouldNormalizeToSlot && isFlatDefaultAvatar)
         {
@@ -1058,6 +1372,18 @@ internal sealed class WindowCaptureService
             var fittedMinY = Math.Max(0, (int)Math.Round(centerY - ((avatarSize - 1) / 2.0)));
             var fittedMaxX = Math.Min(frameWidth - 1, fittedMinX + avatarSize - 1);
             var fittedMaxY = Math.Min(frameHeight - 1, fittedMinY + avatarSize - 1);
+            return (fittedMinX, fittedMaxX, fittedMinY, fittedMaxY);
+        }
+
+        if (slotKind == AvatarSlotKind.ThumbnailRow)
+        {
+            var thumbnailSlotSize = Math.Max(24, Math.Min(34, Math.Max(componentWidth, componentHeight) + 2));
+            var centerX = (minX + maxX) / 2.0;
+            var centerY = (minY + maxY) / 2.0;
+            var fittedMinX = Math.Max(0, (int)Math.Round(centerX - ((thumbnailSlotSize - 1) / 2.0)));
+            var fittedMinY = Math.Max(0, (int)Math.Round(centerY - ((thumbnailSlotSize - 1) / 2.0)));
+            var fittedMaxX = Math.Min(frameWidth - 1, fittedMinX + thumbnailSlotSize - 1);
+            var fittedMaxY = Math.Min(frameHeight - 1, fittedMinY + thumbnailSlotSize - 1);
             return (fittedMinX, fittedMaxX, fittedMinY, fittedMaxY);
         }
 
@@ -1082,15 +1408,29 @@ internal sealed class WindowCaptureService
 
     private static bool IsNormalizedAvatarSlot(int maskWidth, int maskHeight, int componentWidth, int componentHeight)
     {
-        return maskWidth == 40 &&
-               maskHeight == 40 &&
+        return maskWidth >= 36 &&
+               maskWidth <= 44 &&
+               maskHeight >= 36 &&
+               maskHeight <= 44 &&
                componentWidth <= 52 &&
                componentHeight <= 52;
     }
 
+    private static bool IsMainAvatarSlot(int maskWidth, int maskHeight, int componentWidth, int componentHeight)
+    {
+        return maskWidth >= 52 &&
+               maskWidth <= 58 &&
+               maskHeight >= 52 &&
+               maskHeight <= 58 &&
+               componentWidth >= 48 &&
+               componentWidth <= 58 &&
+               componentHeight >= 48 &&
+               componentHeight <= 58;
+    }
+
     private static bool IsFlatDefaultAvatarComponent(double averageTexture, double averageChroma)
     {
-        return averageTexture < 32 && averageChroma < 96;
+        return averageTexture < 8.5 && averageChroma >= 48 && averageChroma < 110;
     }
 
     private static int GetAvatarEdgePadding(int width, int height, double fillRatio)
@@ -1303,6 +1643,240 @@ internal sealed class WindowCaptureService
         return luminance >= 188 && texture < 12.5 && chroma < 44;
     }
 
+    private static bool ShouldSkipThumbnailAvatarFringePixel(
+        byte[] pixels,
+        bool[] thumbnailAvatarMask,
+        int width,
+        int height,
+        int x,
+        int y,
+        int stride)
+    {
+        var coveredNeighbors = 0;
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            if (thumbnailAvatarMask[ny * width + nx])
+            {
+                coveredNeighbors++;
+            }
+        }
+
+        if (coveredNeighbors >= 8)
+        {
+            return false;
+        }
+
+        var index = y * stride + x * 4;
+        var blue = pixels[index];
+        var green = pixels[index + 1];
+        var red = pixels[index + 2];
+        var luminance = GetLuminance(red, green, blue);
+        var texture = GetLocalTexture(pixels, width, height, x, y, stride);
+        var chroma = GetChroma(red, green, blue);
+
+        return luminance >= 180 && texture < 22 && chroma < 88;
+    }
+
+    private static bool ShouldSkipMainAvatarFringePixel(
+        byte[] pixels,
+        bool[] mainAvatarMask,
+        int width,
+        int height,
+        int x,
+        int y,
+        int stride,
+        double preserveStrength)
+    {
+        var coveredNeighbors = 0;
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            if (mainAvatarMask[ny * width + nx])
+            {
+                coveredNeighbors++;
+            }
+        }
+
+        var isBoundaryPixel = coveredNeighbors < 8;
+        if (!isBoundaryPixel)
+        {
+            return false;
+        }
+
+        var index = y * stride + x * 4;
+        var blue = pixels[index];
+        var green = pixels[index + 1];
+        var red = pixels[index + 2];
+        var luminance = GetLuminance(red, green, blue);
+        var texture = GetLocalTexture(pixels, width, height, x, y, stride);
+        var chroma = GetChroma(red, green, blue);
+
+        if (luminance >= 192 && texture < 24 && chroma < 124)
+        {
+            return true;
+        }
+
+        if (preserveStrength >= 0.99)
+        {
+            return false;
+        }
+
+        return luminance >= 162 && texture < 19 && chroma < 96;
+    }
+
+    private static bool ShouldSkipLogoLikeMainAvatarFringePixel(
+        byte[] pixels,
+        bool[] logoLikeMainAvatarMask,
+        int width,
+        int height,
+        int x,
+        int y,
+        int stride)
+    {
+        var coveredNeighbors = 0;
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            if (logoLikeMainAvatarMask[ny * width + nx])
+            {
+                coveredNeighbors++;
+            }
+        }
+
+        if (coveredNeighbors >= 8)
+        {
+            return false;
+        }
+
+        var index = y * stride + x * 4;
+        var blue = pixels[index];
+        var green = pixels[index + 1];
+        var red = pixels[index + 2];
+        var luminance = GetLuminance(red, green, blue);
+        var texture = GetLocalTexture(pixels, width, height, x, y, stride);
+        var chroma = GetChroma(red, green, blue);
+
+        return luminance >= 142 && texture < 34 && chroma < 176;
+    }
+
+    private static void GetBoundaryCorrectedColor(
+        byte[] pixels,
+        bool[] mask,
+        int width,
+        int height,
+        int x,
+        int y,
+        int stride,
+        double strongBlend,
+        double softBlend,
+        bool replaceBrightBoundary,
+        ref byte red,
+        ref byte green,
+        ref byte blue)
+    {
+        var coveredNeighbors = 0;
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+        {
+            if (mask[ny * width + nx])
+            {
+                coveredNeighbors++;
+            }
+        }
+
+        // Only correct edge pixels; interior pixels should stay untouched.
+        if (coveredNeighbors >= 8)
+        {
+            return;
+        }
+
+        var sampleCount = 0;
+        var redSum = 0.0;
+        var greenSum = 0.0;
+        var blueSum = 0.0;
+        var preferredSampleCount = 0;
+        var preferredRedSum = 0.0;
+        var preferredGreenSum = 0.0;
+        var preferredBlueSum = 0.0;
+
+        foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 2))
+        {
+            if (!mask[ny * width + nx])
+            {
+                continue;
+            }
+
+            var neighborCovered = 0;
+            foreach (var (nnx, nny) in EnumerateNeighborCoordinates(nx, ny, width, height, 1))
+            {
+                if (mask[nny * width + nnx])
+                {
+                    neighborCovered++;
+                }
+            }
+
+            if (neighborCovered < 7)
+            {
+                continue;
+            }
+
+            var neighborIndex = ny * stride + nx * 4;
+            var neighborBlue = pixels[neighborIndex];
+            var neighborGreen = pixels[neighborIndex + 1];
+            var neighborRed = pixels[neighborIndex + 2];
+            blueSum += neighborBlue;
+            greenSum += neighborGreen;
+            redSum += neighborRed;
+            sampleCount++;
+
+            var neighborLuminance = GetLuminance(neighborRed, neighborGreen, neighborBlue);
+            var neighborChroma = GetChroma(neighborRed, neighborGreen, neighborBlue);
+            if (neighborLuminance <= GetLuminance(red, green, blue) - 6 || neighborChroma >= GetChroma(red, green, blue) + 6)
+            {
+                preferredBlueSum += neighborBlue;
+                preferredGreenSum += neighborGreen;
+                preferredRedSum += neighborRed;
+                preferredSampleCount++;
+            }
+        }
+
+        if (sampleCount == 0)
+        {
+            return;
+        }
+
+        var averageRed = preferredSampleCount > 0 ? preferredRedSum / preferredSampleCount : redSum / sampleCount;
+        var averageGreen = preferredSampleCount > 0 ? preferredGreenSum / preferredSampleCount : greenSum / sampleCount;
+        var averageBlue = preferredSampleCount > 0 ? preferredBlueSum / preferredSampleCount : blueSum / sampleCount;
+        var currentLuminance = GetLuminance(red, green, blue);
+        var averageLuminance = GetLuminance(
+            ClampToByte(averageRed),
+            ClampToByte(averageGreen),
+            ClampToByte(averageBlue));
+        var currentChroma = GetChroma(red, green, blue);
+        var averageChroma = GetChroma(
+            ClampToByte(averageRed),
+            ClampToByte(averageGreen),
+            ClampToByte(averageBlue));
+
+        if (currentLuminance <= averageLuminance + 6 && currentChroma >= averageChroma - 6)
+        {
+            return;
+        }
+
+        if (replaceBrightBoundary &&
+            currentLuminance >= averageLuminance + 6 &&
+            currentChroma <= averageChroma + 36)
+        {
+            red = ClampToByte(averageRed);
+            green = ClampToByte(averageGreen);
+            blue = ClampToByte(averageBlue);
+            return;
+        }
+
+        var blend = currentLuminance > averageLuminance + 18 ? strongBlend : softBlend;
+        red = BlendChannel(red, ClampToByte(averageRed), blend);
+        green = BlendChannel(green, ClampToByte(averageGreen), blend);
+        blue = BlendChannel(blue, ClampToByte(averageBlue), blend);
+    }
+
     private static bool HasNearbyComponentPixel(
         bool[] componentMask,
         int left,
@@ -1402,7 +1976,7 @@ internal sealed class WindowCaptureService
                     continue;
                 }
 
-                if (!HasNearbyComponentPixel(componentMask, 0, 0, width, height, localX, localY, 1))
+                if (!HasNearbyComponentPixel(componentMask, 0, 0, width, height, localX, localY, 2))
                 {
                     continue;
                 }
@@ -1549,6 +2123,78 @@ internal sealed class WindowCaptureService
         Array.Copy(eroded, componentMask, componentMask.Length);
     }
 
+    private static void ExpandMainAvatarComponentMask(
+        bool[] componentMask,
+        int left,
+        int top,
+        int width,
+        int height,
+        byte[] pixels,
+        int frameWidth,
+        int frameHeight,
+        int stride,
+        double averageRed,
+        double averageGreen,
+        double averageBlue)
+    {
+        var expanded = new bool[componentMask.Length];
+        Array.Copy(componentMask, expanded, componentMask.Length);
+
+        for (var localY = 0; localY < height; localY++)
+        {
+            for (var localX = 0; localX < width; localX++)
+            {
+                var localIndex = localY * width + localX;
+                if (componentMask[localIndex])
+                {
+                    continue;
+                }
+
+                if (!HasNearbyComponentPixel(componentMask, 0, 0, width, height, localX, localY, 1))
+                {
+                    continue;
+                }
+
+                var x = left + localX;
+                var y = top + localY;
+                if (x < 0 || y < 0 || x >= frameWidth || y >= frameHeight)
+                {
+                    continue;
+                }
+
+                var pixelIndex = y * stride + x * 4;
+                var blue = pixels[pixelIndex];
+                var green = pixels[pixelIndex + 1];
+                var red = pixels[pixelIndex + 2];
+                var alpha = pixels[pixelIndex + 3];
+                if (alpha == 0)
+                {
+                    continue;
+                }
+
+                var luminance = GetLuminance(red, green, blue);
+                if (luminance < 20 || luminance > 250)
+                {
+                    continue;
+                }
+
+                var chroma = GetChroma(red, green, blue);
+                var redDiff = red - averageRed;
+                var greenDiff = green - averageGreen;
+                var blueDiff = blue - averageBlue;
+                var colorDistance = Math.Sqrt((redDiff * redDiff) + (greenDiff * greenDiff) + (blueDiff * blueDiff));
+                var isBrightNeutralDetail = luminance >= 118 && chroma < 110;
+
+                if (colorDistance <= 108 || isBrightNeutralDetail)
+                {
+                    expanded[localIndex] = true;
+                }
+            }
+        }
+
+        Array.Copy(expanded, componentMask, componentMask.Length);
+    }
+
     private static bool IsInsideAvatarShape(
         int x,
         int y,
@@ -1620,6 +2266,8 @@ internal sealed class WindowCaptureService
         int height,
         double fillRatio,
         bool isNormalizedAvatarSlot,
+        bool isThumbnailRowSlot,
+        bool isMainAvatarSlot,
         bool isFlatDefaultAvatar,
         double averageTexture,
         double averageChroma)
@@ -1630,6 +2278,16 @@ internal sealed class WindowCaptureService
         }
 
         if (isNormalizedAvatarSlot)
+        {
+            return AvatarShape.KakaoProfile;
+        }
+
+        if (isThumbnailRowSlot)
+        {
+            return AvatarShape.Circle;
+        }
+
+        if (isMainAvatarSlot)
         {
             return AvatarShape.KakaoProfile;
         }

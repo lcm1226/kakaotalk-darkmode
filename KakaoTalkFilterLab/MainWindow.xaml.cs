@@ -238,6 +238,11 @@ public partial class MainWindow : Window
             {
                 capturedFrame = _windowsGraphicsCaptureService.LatestFrame;
                 captureStatus = _windowsGraphicsCaptureService.Status;
+                if (capturedFrame is not null && !IsValidCapturedFrame(capturedFrame, targetWindow))
+                {
+                    capturedFrame = null;
+                    captureStatus += " invalid-size";
+                }
             }
             else
             {
@@ -262,6 +267,23 @@ public partial class MainWindow : Window
         }
 
         return capturedFrame;
+    }
+
+    private static bool IsValidCapturedFrame(BitmapSource frame, WindowInfo targetWindow)
+    {
+        if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0 || targetWindow.Width <= 0 || targetWindow.Height <= 0)
+        {
+            return false;
+        }
+
+        if (frame.PixelWidth < targetWindow.Width * 0.75 || frame.PixelHeight < targetWindow.Height * 0.75)
+        {
+            return false;
+        }
+
+        var frameAspect = frame.PixelWidth / (double)frame.PixelHeight;
+        var targetAspect = targetWindow.Width / (double)targetWindow.Height;
+        return Math.Abs(frameAspect - targetAspect) <= 0.18;
     }
 
     private BitmapSource ApplyModeToFrame(BitmapSource capturedFrame, OverlayMode mode)
@@ -359,14 +381,14 @@ public partial class MainWindow : Window
         var reportPath = Path.Combine(exportDirectory, "report.txt");
         File.WriteAllText(
             reportPath,
-            $"CapturedAt={DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\nCapture={captureStatus}\r\nHandle=0x{targetWindow.Handle:X}\r\nBounds={targetWindow.X},{targetWindow.Y},{targetWindow.Width},{targetWindow.Height}\r\nDimOpacity={Math.Round(_dimOpacityValue)}\r\nInvertStrength={Math.Round(_invertTuning.Strength)}\r\nInvertBrightness={Math.Round(_invertTuning.Brightness)}\r\nInvertContrast={Math.Round(_invertTuning.Contrast)}\r\nInvertGamma={Math.Round(_invertTuning.Gamma)}\r\nSmartStrength={Math.Round(_smartTuning.Strength)}\r\nSmartBrightness={Math.Round(_smartTuning.Brightness)}\r\nSmartContrast={Math.Round(_smartTuning.Contrast)}\r\nSmartGamma={Math.Round(_smartTuning.Gamma)}\r\n");
+            $"CapturedAt={DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\nCapture={captureStatus}\r\nHandle=0x{targetWindow.Handle:X}\r\nBounds={targetWindow.X},{targetWindow.Y},{targetWindow.Width},{targetWindow.Height}\r\nFrame={capturedFrame.PixelWidth},{capturedFrame.PixelHeight}\r\nDimOpacity={Math.Round(_dimOpacityValue)}\r\nInvertStrength={Math.Round(_invertTuning.Strength)}\r\nInvertBrightness={Math.Round(_invertTuning.Brightness)}\r\nInvertContrast={Math.Round(_invertTuning.Contrast)}\r\nInvertGamma={Math.Round(_invertTuning.Gamma)}\r\nSmartStrength={Math.Round(_smartTuning.Strength)}\r\nSmartBrightness={Math.Round(_smartTuning.Brightness)}\r\nSmartContrast={Math.Round(_smartTuning.Contrast)}\r\nSmartGamma={Math.Round(_smartTuning.Gamma)}\r\n");
 
         ExportValue.Text = exportDirectory;
     }
 
     private static string GetExportDirectory()
     {
-        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "captures"));
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "captures"));
     }
 
     private OverlayMode GetSelectedMode()

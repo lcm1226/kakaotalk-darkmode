@@ -27,7 +27,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
     private const int D3DDriverTypeHardware = 1;
     private const int D3DDriverTypeWarp = 5;
     private const uint D3D11SdkVersion = 7;
-    private static readonly TimeSpan MinimumFrameCopyInterval = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan MinimumFrameCopyInterval = TimeSpan.FromMilliseconds(2000);
 
     private readonly object _sync = new();
     private GraphicsCaptureItem? _item;

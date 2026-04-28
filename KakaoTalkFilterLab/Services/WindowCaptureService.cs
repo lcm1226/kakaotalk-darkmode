@@ -11,10 +11,6 @@ namespace KakaoTalkFilterLab.Services;
 internal sealed class WindowCaptureService
 {
     private static readonly Geometry KakaoProfileSquircleGeometry = CreateKakaoProfileSquircleGeometry();
-    // Preserve only the inner avatar area so the inverted dark background covers 1px edge fringes.
-    private const int FullSizeAvatarInnerCropPx = 1;
-    private const int ThumbnailAvatarInnerCropPx = 1;
-    private static readonly bool UseProfileOnlySmartPath = true;
 
     public BitmapSource? Capture(WindowInfo window)
     {
@@ -74,11 +70,6 @@ internal sealed class WindowCaptureService
         double gamma = 1.0)
     {
         strength = Math.Clamp(strength, 0, 1);
-        if (UseProfileOnlySmartPath)
-        {
-            return SmartInvertProfileOnly(source, strength, brightness, contrast, gamma);
-        }
-
         var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
         converted.Freeze();
 
@@ -392,309 +383,6 @@ internal sealed class WindowCaptureService
         return result;
     }
 
-
-    private BitmapSource SmartInvertProfileOnly(
-        BitmapSource source,
-        double strength,
-        double brightness,
-        double contrast,
-        double gamma)
-    {
-        var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
-        converted.Freeze();
-
-        var width = converted.PixelWidth;
-        var height = converted.PixelHeight;
-        var stride = width * 4;
-        var originalPixels = new byte[stride * height];
-        converted.CopyPixels(originalPixels, stride, 0);
-
-        var outputPixels = new byte[originalPixels.Length];
-
-        for (var index = 0; index < originalPixels.Length; index += 4)
-        {
-            var blue = originalPixels[index];
-            var green = originalPixels[index + 1];
-            var red = originalPixels[index + 2];
-            var alpha = originalPixels[index + 3];
-
-            outputPixels[index + 3] = alpha;
-            if (alpha == 0)
-            {
-                continue;
-            }
-
-            outputPixels[index] = BlendChannel(blue, (byte)(255 - blue), strength);
-            outputPixels[index + 1] = BlendChannel(green, (byte)(255 - green), strength);
-            outputPixels[index + 2] = BlendChannel(red, (byte)(255 - red), strength);
-        }
-
-        ApplyToneAdjustments(outputPixels, brightness, contrast, gamma);
-        ApplyFastProfilePreservation(originalPixels, outputPixels, width, height, stride);
-        NormalizeOuterEdge(outputPixels, width, height);
-
-        var result = BitmapSource.Create(
-            width,
-            height,
-            converted.DpiX,
-            converted.DpiY,
-            PixelFormats.Bgra32,
-            null,
-            outputPixels,
-            stride);
-
-        result.Freeze();
-        return result;
-    }
-
-    private static void ApplyFastProfilePreservation(byte[] originalPixels, byte[] outputPixels, int width, int height, int stride)
-    {
-        var slots = new List<(int Left, int Top, int Size, AvatarShape Shape, int Inset)>();
-        AddFastLeftListProfileSlots(slots, originalPixels, width, height, stride);
-        AddFastThumbnailProfileSlots(slots, originalPixels, width, height, stride);
-
-        foreach (var slot in slots)
-        {
-            CopyOriginalProfileSlot(originalPixels, outputPixels, width, height, stride, slot.Left, slot.Top, slot.Size, slot.Shape, slot.Inset);
-        }
-    }
-
-    private static void AddFastLeftListProfileSlots(
-        List<(int Left, int Top, int Size, AvatarShape Shape, int Inset)> slots,
-        byte[] pixels,
-        int width,
-        int height,
-        int stride)
-    {
-        var minX = Math.Clamp((int)Math.Round(width * 0.155), 0, Math.Max(0, width - 1));
-        var maxX = Math.Clamp((int)Math.Round(width * 0.295), minX, Math.Max(0, width - 1));
-        var minY = Math.Clamp((int)Math.Round(height * 0.085), 0, Math.Max(0, height - 1));
-        var rowCounts = new int[height];
-
-        for (var y = minY; y < height; y++)
-        {
-            var count = 0;
-            for (var x = minX; x <= maxX; x++)
-            {
-                if (IsFastProfileContentPixel(pixels, y * stride + x * 4))
-                {
-                    count++;
-                }
-            }
-
-            rowCounts[y] = count;
-        }
-
-        var threshold = Math.Max(8, (maxX - minX + 1) / 7);
-        var yCursor = minY;
-        while (yCursor < height)
-        {
-            while (yCursor < height && rowCounts[yCursor] < threshold)
-            {
-                yCursor++;
-            }
-
-            var startY = yCursor;
-            var gap = 0;
-            while (yCursor < height)
-            {
-                if (rowCounts[yCursor] >= threshold)
-                {
-                    gap = 0;
-                }
-                else if (++gap > 2)
-                {
-                    break;
-                }
-
-                yCursor++;
-            }
-
-            var endY = Math.Max(startY, yCursor - gap - 1);
-            var componentHeight = endY - startY + 1;
-            if (componentHeight < 36 || componentHeight > 78)
-            {
-                continue;
-            }
-
-            var centerY = (startY + endY) / 2.0;
-            var slotSize = width >= 560 && width <= 640 ? 55 : Math.Clamp(componentHeight + 4, 44, 60);
-            var centerX = GetLeftListAvatarCenterX(width * (134.0 / 594.0), width);
-            var left = Math.Clamp((int)Math.Round(centerX - ((slotSize - 1) / 2.0)), 0, Math.Max(0, width - slotSize));
-            var top = Math.Clamp((int)Math.Round(centerY - ((slotSize - 1) / 2.0)), 0, Math.Max(0, height - slotSize));
-            AddProfileSlotIfDistinct(slots, left, top, slotSize, AvatarShape.KakaoProfile, FullSizeAvatarInnerCropPx);
-        }
-    }
-
-    private static void AddFastThumbnailProfileSlots(
-        List<(int Left, int Top, int Size, AvatarShape Shape, int Inset)> slots,
-        byte[] pixels,
-        int width,
-        int height,
-        int stride)
-    {
-        var minX = Math.Clamp((int)Math.Round(width * 0.125), 0, Math.Max(0, width - 1));
-        var maxX = Math.Clamp((int)Math.Round(width * 0.68), minX, Math.Max(0, width - 1));
-        var minY = Math.Clamp((int)Math.Round(height * 0.15), 0, Math.Max(0, height - 1));
-        var maxY = Math.Clamp((int)Math.Round(height * 0.42), minY, Math.Max(0, height - 1));
-        var visited = new bool[width * height];
-        var queue = new Queue<int>();
-
-        for (var y = minY; y <= maxY; y++)
-        {
-            for (var x = minX; x <= maxX; x++)
-            {
-                var start = y * width + x;
-                if (visited[start] || !IsFastProfileContentPixel(pixels, y * stride + x * 4))
-                {
-                    continue;
-                }
-
-                visited[start] = true;
-                queue.Clear();
-                queue.Enqueue(start);
-                var minComponentX = x;
-                var maxComponentX = x;
-                var minComponentY = y;
-                var maxComponentY = y;
-                var area = 0;
-
-                while (queue.Count > 0)
-                {
-                    var current = queue.Dequeue();
-                    area++;
-                    var currentX = current % width;
-                    var currentY = current / width;
-                    if (currentX < minComponentX) minComponentX = currentX;
-                    if (currentX > maxComponentX) maxComponentX = currentX;
-                    if (currentY < minComponentY) minComponentY = currentY;
-                    if (currentY > maxComponentY) maxComponentY = currentY;
-
-                    foreach (var (nx, ny) in EnumerateNeighborCoordinates(currentX, currentY, width, height, 1))
-                    {
-                        if (nx < minX || nx > maxX || ny < minY || ny > maxY)
-                        {
-                            continue;
-                        }
-
-                        var neighbor = ny * width + nx;
-                        if (visited[neighbor] || !IsFastProfileContentPixel(pixels, ny * stride + nx * 4))
-                        {
-                            continue;
-                        }
-
-                        visited[neighbor] = true;
-                        queue.Enqueue(neighbor);
-                    }
-                }
-
-                var componentWidth = maxComponentX - minComponentX + 1;
-                var componentHeight = maxComponentY - minComponentY + 1;
-                if (componentWidth < 18 || componentHeight < 18 || componentWidth > 46 || componentHeight > 46 || area < 120)
-                {
-                    continue;
-                }
-
-                var aspectRatio = componentWidth / (double)componentHeight;
-                if (aspectRatio < 0.65 || aspectRatio > 1.45)
-                {
-                    continue;
-                }
-
-                var slotSize = Math.Clamp(Math.Max(componentWidth, componentHeight) + 2, 24, 42);
-                var centerX = (minComponentX + maxComponentX) / 2.0;
-                var centerY = (minComponentY + maxComponentY) / 2.0;
-                var left = Math.Clamp((int)Math.Round(centerX - ((slotSize - 1) / 2.0)), 0, Math.Max(0, width - slotSize));
-                var top = Math.Clamp((int)Math.Round(centerY - ((slotSize - 1) / 2.0)), 0, Math.Max(0, height - slotSize));
-                AddProfileSlotIfDistinct(slots, left, top, slotSize, AvatarShape.Circle, ThumbnailAvatarInnerCropPx);
-            }
-        }
-    }
-
-    private static bool IsFastProfileContentPixel(byte[] pixels, int index)
-    {
-        if (pixels[index + 3] == 0)
-        {
-            return false;
-        }
-
-        var blue = pixels[index];
-        var green = pixels[index + 1];
-        var red = pixels[index + 2];
-        var luminance = GetLuminance(red, green, blue);
-        var chroma = GetChroma(red, green, blue);
-        return chroma >= 12 || luminance <= 232;
-    }
-
-    private static void AddProfileSlotIfDistinct(
-        List<(int Left, int Top, int Size, AvatarShape Shape, int Inset)> slots,
-        int left,
-        int top,
-        int size,
-        AvatarShape shape,
-        int inset)
-    {
-        var centerX = left + size / 2.0;
-        var centerY = top + size / 2.0;
-        foreach (var slot in slots)
-        {
-            var existingCenterX = slot.Left + slot.Size / 2.0;
-            var existingCenterY = slot.Top + slot.Size / 2.0;
-            var dx = centerX - existingCenterX;
-            var dy = centerY - existingCenterY;
-            if ((dx * dx) + (dy * dy) < 900)
-            {
-                return;
-            }
-        }
-
-        slots.Add((left, top, size, shape, inset));
-    }
-
-    private static void CopyOriginalProfileSlot(
-        byte[] originalPixels,
-        byte[] outputPixels,
-        int width,
-        int height,
-        int stride,
-        int left,
-        int top,
-        int size,
-        AvatarShape shape,
-        int inset)
-    {
-        var innerLeft = left + inset;
-        var innerTop = top + inset;
-        var innerSize = Math.Max(1, size - inset * 2);
-        var maxY = Math.Min(height - 1, innerTop + innerSize - 1);
-        var maxX = Math.Min(width - 1, innerLeft + innerSize - 1);
-
-        for (var y = Math.Max(0, innerTop); y <= maxY; y++)
-        {
-            for (var x = Math.Max(0, innerLeft); x <= maxX; x++)
-            {
-                var coverage = GetAvatarShapeCoverage(x, y, innerLeft, innerTop, innerSize, innerSize, 0, shape);
-                if (coverage <= 0)
-                {
-                    continue;
-                }
-
-                var index = y * stride + x * 4;
-                if (coverage >= 0.995)
-                {
-                    outputPixels[index] = originalPixels[index];
-                    outputPixels[index + 1] = originalPixels[index + 1];
-                    outputPixels[index + 2] = originalPixels[index + 2];
-                }
-                else
-                {
-                    outputPixels[index] = BlendChannel(outputPixels[index], originalPixels[index], coverage);
-                    outputPixels[index + 1] = BlendChannel(outputPixels[index + 1], originalPixels[index + 1], coverage);
-                    outputPixels[index + 2] = BlendChannel(outputPixels[index + 2], originalPixels[index + 2], coverage);
-                }
-            }
-        }
-    }
     public void SavePng(BitmapSource source, string path)
     {
         var directory = Path.GetDirectoryName(path);
@@ -1251,6 +939,21 @@ internal sealed class WindowCaptureService
             var averageTexture = textureSum / component.Count;
             var averageChroma = chromaSum / component.Count;
             var slotKind = GetAvatarSlotKind(minX, maxX, minY, maxY, componentWidth, componentHeight, width, height, fillRatio);
+            if (slotKind == AvatarSlotKind.LeftList &&
+                HasPeerAvatarCandidateOnSameRow(candidateMask, width, height, minX, maxX, minY, maxY, componentWidth, componentHeight))
+            {
+                slotKind = AvatarSlotKind.ThumbnailRow;
+            }
+
+            if (slotKind == AvatarSlotKind.LeftList)
+            {
+                var centerY = (minY + maxY) / 2.0;
+                if (!HasAdjacentAvatarRowText(pixels, width, height, stride, centerY))
+                {
+                    continue;
+                }
+            }
+
             var isThumbnailRowSlot = slotKind == AvatarSlotKind.ThumbnailRow;
             var isLayoutAvatarSlot = slotKind != AvatarSlotKind.None;
             var isFlatDefaultAvatar = IsFlatDefaultAvatarComponent(averageTexture, averageChroma);
@@ -1275,7 +978,6 @@ internal sealed class WindowCaptureService
             var isMainAvatarSlot = IsMainAvatarSlot(maskWidth, maskHeight, componentWidth, componentHeight);
             var isLogoLikeMainAvatar =
                 isMainAvatarSlot &&
-                !isLayoutAvatarSlot &&
                 !isFlatDefaultAvatar &&
                 averageTexture < 20 &&
                 averageChroma >= 120;
@@ -1304,7 +1006,7 @@ internal sealed class WindowCaptureService
             var inset = GetAvatarInset(maskWidth, maskHeight, fillRatio, shape);
             if (isFlatDefaultAvatar)
             {
-                inset = isThumbnailRowSlot ? ThumbnailAvatarInnerCropPx : FullSizeAvatarInnerCropPx;
+                inset = 0;
             }
             else if (isNormalizedAvatarSlot)
             {
@@ -1316,34 +1018,31 @@ internal sealed class WindowCaptureService
             var innerHeight = Math.Max(1, maskHeight - inset * 2);
             if (isFlatDefaultAvatar)
             {
-                var flatInset = isThumbnailRowSlot ? ThumbnailAvatarInnerCropPx : FullSizeAvatarInnerCropPx;
-                innerLeft = maskMinX + flatInset;
-                innerTop = maskMinY + flatInset;
-                innerWidth = Math.Max(1, maskWidth - flatInset * 2);
-                innerHeight = Math.Max(1, maskHeight - flatInset * 2);
+                innerLeft = maskMinX;
+                innerTop = maskMinY;
+                innerWidth = maskWidth;
+                innerHeight = maskHeight;
             }
             else if (isNormalizedAvatarSlot)
             {
-                var normalizedInset = isLayoutAvatarSlot ? FullSizeAvatarInnerCropPx : 3;
-                innerLeft = maskMinX + normalizedInset;
-                innerTop = maskMinY + normalizedInset;
-                innerWidth = Math.Max(1, maskWidth - normalizedInset * 2);
-                innerHeight = Math.Max(1, maskHeight - normalizedInset * 2);
+                innerLeft = maskMinX + 3;
+                innerTop = maskMinY + 3;
+                innerWidth = Math.Max(1, maskWidth - 6);
+                innerHeight = Math.Max(1, maskHeight - 6);
             }
             else if (isThumbnailRowSlot)
             {
-                innerLeft = maskMinX + ThumbnailAvatarInnerCropPx;
-                innerTop = maskMinY + ThumbnailAvatarInnerCropPx;
-                innerWidth = Math.Max(1, maskWidth - ThumbnailAvatarInnerCropPx * 2);
-                innerHeight = Math.Max(1, maskHeight - ThumbnailAvatarInnerCropPx * 2);
+                innerLeft = maskMinX + 1;
+                innerTop = maskMinY + 1;
+                innerWidth = Math.Max(1, maskWidth - 2);
+                innerHeight = Math.Max(1, maskHeight - 2);
             }
             else if (isMainAvatarSlot)
             {
-                var mainInset = isLayoutAvatarSlot ? FullSizeAvatarInnerCropPx : 2;
-                innerLeft = maskMinX + mainInset;
-                innerTop = maskMinY + mainInset;
-                innerWidth = Math.Max(1, maskWidth - mainInset * 2);
-                innerHeight = Math.Max(1, maskHeight - mainInset * 2);
+                innerLeft = maskMinX + 2;
+                innerTop = maskMinY + 2;
+                innerWidth = Math.Max(1, maskWidth - 4);
+                innerHeight = Math.Max(1, maskHeight - 4);
                 if (isLogoLikeMainAvatar)
                 {
                     innerLeft += 1;
@@ -1604,104 +1303,174 @@ internal sealed class WindowCaptureService
         var visited = new bool[candidateMask.Length];
         var queue = new Queue<int>();
         var component = new List<int>();
-        for (var startY = minScanY; startY < height; startY++)
+        for (var start = 0; start < candidateMask.Length; start++)
         {
-            for (var startX = minScanX; startX <= maxScanX; startX++)
+            if (!candidateMask[start] || visited[start])
             {
-                var start = startY * width + startX;
-                if (!candidateMask[start] || visited[start])
+                continue;
+            }
+
+            queue.Clear();
+            component.Clear();
+            visited[start] = true;
+            queue.Enqueue(start);
+
+            var minX = start % width;
+            var maxX = minX;
+            var minY = start / width;
+            var maxY = minY;
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                component.Add(current);
+                var x = current % width;
+                var y = current / width;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
                 {
-                    continue;
-                }
-
-                queue.Clear();
-                component.Clear();
-                visited[start] = true;
-                queue.Enqueue(start);
-
-                var minX = start % width;
-                var maxX = minX;
-                var minY = start / width;
-                var maxY = minY;
-                while (queue.Count > 0)
-                {
-                    var current = queue.Dequeue();
-                    component.Add(current);
-                    var x = current % width;
-                    var y = current / width;
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-
-                    foreach (var (nx, ny) in EnumerateNeighborCoordinates(x, y, width, height, 1))
+                    if (nx < minScanX || nx > maxScanX || ny < minScanY)
                     {
-                        if (nx < minScanX || nx > maxScanX || ny < minScanY)
-                        {
-                            continue;
-                        }
-
-                        var neighbor = ny * width + nx;
-                        if (!candidateMask[neighbor] || visited[neighbor])
-                        {
-                            continue;
-                        }
-
-                        visited[neighbor] = true;
-                        queue.Enqueue(neighbor);
+                        continue;
                     }
-                }
 
-                var componentWidth = maxX - minX + 1;
-                var componentHeight = maxY - minY + 1;
-                var centerX = (minX + maxX) / 2.0;
-                var centerY = (minY + maxY) / 2.0;
-                if (!IsInsideExpectedLeftListAvatarSlot(minX, maxX, componentWidth, componentHeight, centerX, width) ||
-                    (componentHeight <= 16 && componentWidth >= 44) ||
-                    !ShouldInferLeftListAvatarSlot(component.Count, componentWidth, componentHeight, centerX, centerY, width, height) ||
-                    !HasAdjacentAvatarRowText(pixels, width, height, stride, centerY))
-                {
-                    continue;
-                }
-
-                var centerIndex = Math.Clamp((int)Math.Round(centerY), 0, height - 1) * width + Math.Clamp((int)Math.Round(centerX), 0, width - 1);
-                if (preserveStrengthMap[centerIndex] >= 0.75)
-                {
-                    continue;
-                }
-
-                var slotSize = GetLeftListAvatarSlotSize(componentWidth, componentHeight, width);
-                var slotCenterX = GetLeftListAvatarCenterX(centerX, width);
-                var left = Math.Clamp((int)Math.Round(slotCenterX - ((slotSize - 1) / 2.0)), 0, Math.Max(0, width - slotSize));
-                var top = Math.Clamp((int)Math.Round(centerY - ((slotSize - 1) / 2.0)), 0, Math.Max(0, height - slotSize));
-                for (var y = top; y < top + slotSize; y++)
-                {
-                    for (var x = left; x < left + slotSize; x++)
+                    var neighbor = ny * width + nx;
+                    if (!candidateMask[neighbor] || visited[neighbor])
                     {
-                        var coverage = GetAvatarShapeCoverage(x, y, left, top, slotSize, slotSize, 0, AvatarShape.KakaoProfile);
-                        if (coverage <= 0)
-                        {
-                            continue;
-                        }
-
-                        var preserveIndex = y * width + x;
-                        preserveStrengthMap[preserveIndex] = Math.Max(preserveStrengthMap[preserveIndex], coverage);
-                        mainAvatarMask[preserveIndex] = true;
+                        continue;
                     }
+
+                    visited[neighbor] = true;
+                    queue.Enqueue(neighbor);
+                }
+            }
+
+            var componentWidth = maxX - minX + 1;
+            var componentHeight = maxY - minY + 1;
+            var centerX = (minX + maxX) / 2.0;
+            var centerY = (minY + maxY) / 2.0;
+            if (!ShouldInferLeftListAvatarSlot(component.Count, componentWidth, componentHeight, centerX, centerY, width, height) ||
+                !HasAdjacentAvatarRowText(pixels, width, height, stride, centerY))
+            {
+                continue;
+            }
+
+            var centerIndex = Math.Clamp((int)Math.Round(centerY), 0, height - 1) * width + Math.Clamp((int)Math.Round(centerX), 0, width - 1);
+            if (preserveStrengthMap[centerIndex] >= 0.75)
+            {
+                continue;
+            }
+
+            var slotSize = centerX >= width * 0.222 ? 55 : 50;
+            var slotCenterX = slotSize >= 55 ? 134.0 : 131.5;
+            if (width != 594)
+            {
+                slotCenterX = centerX;
+            }
+
+            var left = Math.Clamp((int)Math.Round(slotCenterX - ((slotSize - 1) / 2.0)), 0, width - slotSize);
+            var top = Math.Clamp((int)Math.Round(centerY - ((slotSize - 1) / 2.0)), 0, height - slotSize);
+            for (var y = top; y < top + slotSize; y++)
+            {
+                for (var x = left; x < left + slotSize; x++)
+                {
+                    var coverage = GetAvatarShapeCoverage(x, y, left, top, slotSize, slotSize, 0, AvatarShape.KakaoProfile);
+                    if (coverage <= 0)
+                    {
+                        continue;
+                    }
+
+                    var preserveIndex = y * width + x;
+                    preserveStrengthMap[preserveIndex] = Math.Max(preserveStrengthMap[preserveIndex], coverage);
+                    mainAvatarMask[preserveIndex] = true;
                 }
             }
         }
     }
+
+    private static bool HasPeerAvatarCandidateOnSameRow(
+        bool[] candidateMask,
+        int frameWidth,
+        int frameHeight,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int componentWidth,
+        int componentHeight)
+    {
+        if (componentWidth < 36 || componentWidth > 58 || componentHeight < 36 || componentHeight > 58)
+        {
+            return false;
+        }
+
+        var centerX = (minX + maxX) / 2.0;
+        var centerY = (minY + maxY) / 2.0;
+        var yRatio = centerY / frameHeight;
+        if (yRatio < 0.12 || yRatio > 0.42)
+        {
+            return false;
+        }
+
+        foreach (var offset in new[] { -75, 75, -150, 150 })
+        {
+            if (HasDenseAvatarCandidateBox(candidateMask, frameWidth, frameHeight, centerX + offset, centerY, 50))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasDenseAvatarCandidateBox(bool[] candidateMask, int width, int height, double centerX, double centerY, int boxSize)
+    {
+        var half = boxSize / 2;
+        var left = Math.Max(0, (int)Math.Round(centerX) - half);
+        var right = Math.Min(width - 1, (int)Math.Round(centerX) + half);
+        var top = Math.Max(0, (int)Math.Round(centerY) - half);
+        var bottom = Math.Min(height - 1, (int)Math.Round(centerY) + half);
+        var count = 0;
+        var minX = width;
+        var maxX = -1;
+        var minY = height;
+        var maxY = -1;
+
+        for (var y = top; y <= bottom; y++)
+        {
+            for (var x = left; x <= right; x++)
+            {
+                if (!candidateMask[y * width + x])
+                {
+                    continue;
+                }
+
+                count++;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+
+        var area = Math.Max(1, (right - left + 1) * (bottom - top + 1));
+        if (count / (double)area < 0.26)
+        {
+            return false;
+        }
+
+        return maxX - minX + 1 >= 28 && maxY - minY + 1 >= 28;
+    }
     private static bool HasAdjacentAvatarRowText(byte[] pixels, int width, int height, int stride, double centerY)
     {
-        var roundedCenterY = (int)Math.Round(centerY);
-        var minY = Math.Max(0, roundedCenterY - 24);
-        var maxY = Math.Min(height - 1, roundedCenterY + 24);
-        var minX = Math.Min(width - 1, Math.Max(190, (int)Math.Round(width * 0.32)));
-        var maxX = Math.Min(width - 1, Math.Max(minX, (int)Math.Round(width * 0.72)));
-        var totalTextLikePixels = 0;
-        var upperTextLikePixels = 0;
-        var lowerTextLikePixels = 0;
+        var minY = Math.Max(0, (int)Math.Round(centerY) - 22);
+        var maxY = Math.Min(height - 1, (int)Math.Round(centerY) + 22);
+        var minX = Math.Min(width - 1, 174);
+        var maxX = Math.Min(width - 1, 430);
+        var textLikePixels = 0;
 
         for (var y = minY; y <= maxY; y++)
         {
@@ -1713,25 +1482,18 @@ internal sealed class WindowCaptureService
                 var red = pixels[index + 2];
                 var luminance = GetLuminance(red, green, blue);
                 var chroma = GetChroma(red, green, blue);
-                if (luminance > 175 && chroma < 42)
+                if (luminance <= 175 || chroma >= 42)
                 {
-                    continue;
-                }
-
-                totalTextLikePixels++;
-                if (y <= roundedCenterY - 4)
-                {
-                    upperTextLikePixels++;
-                }
-                else if (y >= roundedCenterY + 4)
-                {
-                    lowerTextLikePixels++;
+                    textLikePixels++;
+                    if (textLikePixels >= 18)
+                    {
+                        return true;
+                    }
                 }
             }
         }
 
-        return totalTextLikePixels >= 42 &&
-               (lowerTextLikePixels >= 10 || upperTextLikePixels >= 34);
+        return false;
     }
     private static bool IsMonochromeAvatarContentPixel(byte[] pixels, int width, int height, int x, int y, int stride)
     {
@@ -2019,9 +1781,9 @@ internal sealed class WindowCaptureService
         var aspectRatio = width / (double)height;
         var isAvatarLikeShape =
             width >= 18 &&
-            width <= 60 &&
+            width <= 76 &&
             height >= 18 &&
-            height <= 60 &&
+            height <= 76 &&
             aspectRatio >= 0.74 &&
             aspectRatio <= 1.30 &&
             fillRatio >= 0.40;
@@ -2042,41 +1804,16 @@ internal sealed class WindowCaptureService
         }
 
         var isThumbnailRowAvatar =
-            width <= 34 &&
-            height <= 34 &&
+            width <= 56 &&
+            height <= 56 &&
             xRatio >= 0.12 &&
             xRatio <= 0.62 &&
-            yRatio >= 0.22 &&
-            yRatio <= 0.50;
+            yRatio >= 0.12 &&
+            yRatio <= 0.54;
 
         return isThumbnailRowAvatar ? AvatarSlotKind.ThumbnailRow : AvatarSlotKind.None;
     }
 
-    private static int GetLeftListAvatarSlotSize(int componentWidth, int componentHeight, int frameWidth)
-    {
-        if (frameWidth >= 560 && frameWidth <= 640)
-        {
-            return 55;
-        }
-
-        var observedSize = Math.Max(componentWidth, componentHeight);
-        return Math.Clamp(observedSize >= 48 ? observedSize + 2 : 55, 44, 60);
-    }
-
-    private static double GetLeftListAvatarCenterX(double componentCenterX, int frameWidth)
-    {
-        var expectedCenterX = frameWidth * (134.0 / 594.0);
-        return Math.Abs(componentCenterX - expectedCenterX) <= 18 ? expectedCenterX : componentCenterX;
-    }
-
-    private static bool IsInsideExpectedLeftListAvatarSlot(int minX, int maxX, int componentWidth, int componentHeight, double centerX, int frameWidth)
-    {
-        var slotSize = GetLeftListAvatarSlotSize(componentWidth, componentHeight, frameWidth);
-        var slotCenterX = GetLeftListAvatarCenterX(centerX, frameWidth);
-        var left = slotCenterX - ((slotSize - 1) / 2.0);
-        var right = left + slotSize - 1;
-        return minX >= left - 2 && maxX <= right + 2;
-    }
     private static double GetPhotoComponentPreserveStrength(int area, int width, int height, double fillRatio)
     {
         if (area >= 1000 && width >= 28 && height >= 28)
@@ -2122,17 +1859,6 @@ internal sealed class WindowCaptureService
             aspectRatio >= 0.74 &&
             aspectRatio <= 1.30;
 
-        if (slotKind == AvatarSlotKind.LeftList)
-        {
-            var slotSize = GetLeftListAvatarSlotSize(componentWidth, componentHeight, frameWidth);
-            var centerX = (minX + maxX) / 2.0;
-            var centerY = (minY + maxY) / 2.0;
-            var slotCenterX = GetLeftListAvatarCenterX(centerX, frameWidth);
-            var fittedMinX = Math.Clamp((int)Math.Round(slotCenterX - ((slotSize - 1) / 2.0)), 0, Math.Max(0, frameWidth - slotSize));
-            var fittedMinY = Math.Clamp((int)Math.Round(centerY - ((slotSize - 1) / 2.0)), 0, Math.Max(0, frameHeight - slotSize));
-            return (fittedMinX, fittedMinX + slotSize - 1, fittedMinY, fittedMinY + slotSize - 1);
-        }
-
         if (shouldNormalizeToSlot && isFlatDefaultAvatar)
         {
             var avatarSize = Math.Max(componentWidth, componentHeight) + 2;
@@ -2147,7 +1873,7 @@ internal sealed class WindowCaptureService
 
         if (slotKind == AvatarSlotKind.ThumbnailRow)
         {
-            var thumbnailSlotSize = Math.Max(24, Math.Min(40, Math.Max(componentWidth, componentHeight) + 2));
+            var thumbnailSlotSize = Math.Max(24, Math.Min(54, Math.Max(componentWidth, componentHeight) + 2));
             var centerX = (minX + maxX) / 2.0;
             var centerY = (minY + maxY) / 2.0;
             var fittedMinX = Math.Max(0, (int)Math.Round(centerX - ((thumbnailSlotSize - 1) / 2.0)));
@@ -2159,7 +1885,9 @@ internal sealed class WindowCaptureService
 
         if (shouldNormalizeToSlot)
         {
-            const int avatarSlotSize = 40;
+            var avatarSlotSize = slotKind == AvatarSlotKind.LeftList && (componentWidth >= 48 || componentHeight >= 48)
+                ? Math.Max(componentWidth, componentHeight)
+                : 40;
             var centerX = (minX + maxX) / 2.0;
             var centerY = (minY + maxY) / 2.0;
             var normalizedMinX = Math.Max(0, (int)Math.Round(centerX - ((avatarSlotSize - 1) / 2.0)));
@@ -2175,6 +1903,7 @@ internal sealed class WindowCaptureService
             Math.Max(0, minY - edgePadding),
             Math.Min(frameHeight - 1, maxY + edgePadding));
     }
+
     private static bool IsNormalizedAvatarSlot(int maskWidth, int maskHeight, int componentWidth, int componentHeight)
     {
         return maskWidth >= 36 &&
@@ -2187,14 +1916,14 @@ internal sealed class WindowCaptureService
 
     private static bool IsMainAvatarSlot(int maskWidth, int maskHeight, int componentWidth, int componentHeight)
     {
-        return maskWidth >= 52 &&
-               maskWidth <= 58 &&
-               maskHeight >= 52 &&
-               maskHeight <= 58 &&
+        return maskWidth >= 48 &&
+               maskWidth <= 72 &&
+               maskHeight >= 48 &&
+               maskHeight <= 72 &&
                componentWidth >= 48 &&
-               componentWidth <= 58 &&
+               componentWidth <= 72 &&
                componentHeight >= 48 &&
-               componentHeight <= 58;
+               componentHeight <= 72;
     }
 
     private static bool IsFlatDefaultAvatarComponent(double averageTexture, double averageChroma)

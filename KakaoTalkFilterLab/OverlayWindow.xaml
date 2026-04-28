@@ -7,7 +7,7 @@
         ShowActivated="False"
         ResizeMode="NoResize"
         WindowStyle="None">
-    <Grid>
+    <Grid IsHitTestVisible="False">
         <Image x:Name="CaptureImage" Stretch="Fill" Visibility="Collapsed" />
         <Border x:Name="DimFill" Background="#66000000" Visibility="Visible" />
         <Canvas x:Name="PrivacyMaskLayer"

@@ -11,6 +11,7 @@ internal static class Win32
     private const uint DwmwaUseImmersiveDarkModeBefore20H1 = 19;
     private const int GwlExstyle = -20;
     private const int WsExTransparent = 0x20;
+    private const int WsExLayered = 0x00080000;
     private const int WsExToolwindow = 0x80;
     private const int WsExNoactivate = 0x08000000;
     public const int WmHotkey = 0x0312;
@@ -211,7 +212,7 @@ internal static class Win32
     public static void EnableClickThrough(nint hwnd)
     {
         var current = GetWindowLongPtr(hwnd, GwlExstyle).ToInt64();
-        var updated = current | WsExTransparent | WsExToolwindow | WsExNoactivate;
+        var updated = current | WsExTransparent | WsExLayered | WsExToolwindow | WsExNoactivate;
         _ = SetWindowLongPtr(hwnd, GwlExstyle, (nint)updated);
     }
 

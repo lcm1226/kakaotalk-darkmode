@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="KakaoTalk Filter Lab"
+        Icon="Assets/AppIcon.ico"
         Width="760"
         Height="520"
         MinWidth="760"

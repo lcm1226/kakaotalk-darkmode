@@ -39,7 +39,7 @@ public partial class MainWindow : Window
     private const int DefaultModeIndex = 0;
     private const int PrivacyModeHotKeyId = 0x4B48;
     private static readonly TimeSpan MinimumInvertProcessInterval = TimeSpan.FromMilliseconds(1000);
-    private static readonly TimeSpan MinimumSmartProcessInterval = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan MinimumSmartProcessInterval = TimeSpan.FromMilliseconds(3000);
     private static readonly TimeSpan WindowDiscoveryInterval = TimeSpan.FromSeconds(2);
 
     private readonly DispatcherTimer _timer;
@@ -133,11 +133,18 @@ public partial class MainWindow : Window
         _trayIcon = new Forms.NotifyIcon
         {
             Text = "KakaoTalk Filter Lab",
-            Icon = Drawing.SystemIcons.Application,
+            Icon = LoadTrayIcon(),
             ContextMenuStrip = menu,
             Visible = true
         };
         _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
+    }
+
+
+    private static Drawing.Icon LoadTrayIcon()
+    {
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+        return File.Exists(iconPath) ? new Drawing.Icon(iconPath) : Drawing.SystemIcons.Application;
     }
 
     private void MainWindowClosing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -370,7 +377,19 @@ public partial class MainWindow : Window
     {
         try
         {
-            var outputFrame = await Task.Run(() => ApplyModeToFrame(capturedFrame, mode, strength, brightness, contrast, gamma));
+            var outputFrame = await Task.Run(() =>
+            {
+                var originalPriority = Thread.CurrentThread.Priority;
+                try
+                {
+                    Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+                    return ApplyModeToFrame(capturedFrame, mode, strength, brightness, contrast, gamma);
+                }
+                finally
+                {
+                    Thread.CurrentThread.Priority = originalPriority;
+                }
+            });
             if (pipelineVersion == _filterPipelineVersion &&
                 GetSelectedMode() == mode &&
                 OverlayEnabledCheckBox.IsChecked == true &&
@@ -580,6 +599,7 @@ public partial class MainWindow : Window
                 GetContrastValue(_smartTuning),
                 GetGammaValue(_smartTuning)),
             smartPath);
+        _captureService.SaveSmartDebugOutputs(capturedFrame, Path.Combine(exportDirectory, "debug-smart"));
 
         var reportPath = Path.Combine(exportDirectory, "report.txt");
         File.WriteAllText(

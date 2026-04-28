@@ -27,6 +27,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
     private const int D3DDriverTypeHardware = 1;
     private const int D3DDriverTypeWarp = 5;
     private const uint D3D11SdkVersion = 7;
+    private static readonly TimeSpan MinimumFrameCopyInterval = TimeSpan.FromMilliseconds(1000);
 
     private readonly object _sync = new();
     private GraphicsCaptureItem? _item;
@@ -37,6 +38,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
     private SizeInt32 _currentSize;
     private BitmapSource? _latestFrame;
     private bool _framePending;
+    private DateTime _lastFrameCopyUtc = DateTime.MinValue;
     private string _status = "Idle";
     private int? _lastCreateItemHResult;
 
@@ -72,6 +74,12 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
             return false;
         }
 
+        if (_session is not null && _currentHandle == hwnd)
+        {
+            SetStatus(_latestFrame is null ? "WGC waiting frame" : "WGC active");
+            return true;
+        }
+
         GraphicsCaptureItem? item;
         try
         {
@@ -89,12 +97,6 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
                 ? $"WGC item unavailable (0x{hr:X8})"
                 : "WGC item unavailable");
             return false;
-        }
-
-        if (_session is not null && _currentHandle == hwnd && _currentSize.Equals(item.Size))
-        {
-            SetStatus(_latestFrame is null ? "WGC waiting frame" : "WGC active");
-            return true;
         }
 
         Stop();
@@ -270,12 +272,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
 
     private async void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
-        if (_framePending)
-        {
-            return;
-        }
-
-        _framePending = true;
+        var ownsPending = false;
         try
         {
             using var frame = sender.TryGetNextFrame();
@@ -283,6 +280,16 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
             {
                 return;
             }
+
+            var nowUtc = DateTime.UtcNow;
+            if (_framePending || nowUtc - _lastFrameCopyUtc < MinimumFrameCopyInterval)
+            {
+                return;
+            }
+
+            _framePending = true;
+            ownsPending = true;
+            _lastFrameCopyUtc = nowUtc;
 
             if (frame.ContentSize.Width <= 0 || frame.ContentSize.Height <= 0)
             {
@@ -315,7 +322,10 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
         }
         finally
         {
-            _framePending = false;
+            if (ownsPending)
+            {
+                _framePending = false;
+            }
         }
     }
 

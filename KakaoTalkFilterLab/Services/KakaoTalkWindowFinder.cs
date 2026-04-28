@@ -16,7 +16,11 @@ internal sealed class KakaoTalkWindowFinder
     public WindowInfo? FindMainWindow()
     {
         var candidates = GetCandidates();
+        return FindMainWindow(candidates);
+    }
 
+    public WindowInfo? FindMainWindow(IReadOnlyList<WindowInfo> candidates)
+    {
         return candidates
             .Where(IsStrongMainWindowCandidate)
             .OrderByDescending(window => window.Area)

@@ -172,6 +172,42 @@ internal static class Win32
         return results;
     }
 
+
+    public static bool TryGetWindowInfo(nint hwnd, out WindowInfo? window)
+    {
+        window = null;
+        if (hwnd == nint.Zero || !IsWindowVisible(hwnd) || IsIconic(hwnd))
+        {
+            return false;
+        }
+
+        if (!TryGetWindowBounds(hwnd, out var rect))
+        {
+            return false;
+        }
+
+        var width = rect.Right - rect.Left;
+        var height = rect.Bottom - rect.Top;
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        var titleBuilder = new StringBuilder(256);
+        var classBuilder = new StringBuilder(256);
+        _ = GetWindowText(hwnd, titleBuilder, titleBuilder.Capacity);
+        _ = GetClassName(hwnd, classBuilder, classBuilder.Capacity);
+
+        window = new WindowInfo(
+            hwnd,
+            titleBuilder.ToString().Trim(),
+            classBuilder.ToString(),
+            rect.Left,
+            rect.Top,
+            width,
+            height);
+        return true;
+    }
     public static void EnableClickThrough(nint hwnd)
     {
         var current = GetWindowLongPtr(hwnd, GwlExstyle).ToInt64();

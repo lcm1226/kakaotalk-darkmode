@@ -14,6 +14,7 @@ public partial class OverlayWindow : Window
     private const double TitleButtonsVisibleWidth = 138;
     private const double TitleButtonsVisibleHeight = 38;
     private bool _isPrivacyModeEnabled;
+    private byte? _lastDimAlpha;
 
     public OverlayWindow()
     {
@@ -24,6 +25,14 @@ public partial class OverlayWindow : Window
 
     public void ApplyDim(byte alpha)
     {
+        if (_lastDimAlpha == alpha &&
+            CaptureImage.Visibility == Visibility.Collapsed &&
+            DimFill.Visibility == Visibility.Visible)
+        {
+            return;
+        }
+
+        _lastDimAlpha = alpha;
         CaptureImage.Source = null;
         CaptureImage.Visibility = Visibility.Collapsed;
         DimFill.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(alpha, 0, 0, 0));
@@ -32,6 +41,14 @@ public partial class OverlayWindow : Window
 
     public void ApplyCapturedFrame(BitmapSource frame)
     {
+        if (ReferenceEquals(CaptureImage.Source, frame) &&
+            CaptureImage.Visibility == Visibility.Visible &&
+            DimFill.Visibility == Visibility.Collapsed)
+        {
+            return;
+        }
+
+        _lastDimAlpha = null;
         CaptureImage.Source = frame;
         CaptureImage.Visibility = Visibility.Visible;
         DimFill.Visibility = Visibility.Collapsed;
@@ -39,8 +56,14 @@ public partial class OverlayWindow : Window
 
     public void SetPrivacyMode(bool isEnabled)
     {
+        var desiredVisibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+        if (_isPrivacyModeEnabled == isEnabled && PrivacyMaskLayer.Visibility == desiredVisibility)
+        {
+            return;
+        }
+
         _isPrivacyModeEnabled = isEnabled;
-        PrivacyMaskLayer.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+        PrivacyMaskLayer.Visibility = desiredVisibility;
         UpdatePrivacyMaskLayout();
     }
 

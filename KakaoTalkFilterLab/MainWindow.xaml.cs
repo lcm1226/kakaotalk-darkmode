@@ -38,9 +38,14 @@ public partial class MainWindow : Window
     private const double DefaultSmartGamma = 90;
     private const int DefaultModeIndex = 0;
     private const int PrivacyModeHotKeyId = 0x4B48;
+    private static readonly TimeSpan MinimumInvertProcessInterval = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan MinimumSmartProcessInterval = TimeSpan.FromMilliseconds(1500);
+    private static readonly TimeSpan WindowDiscoveryInterval = TimeSpan.FromSeconds(2);
 
     private readonly DispatcherTimer _timer;
     private readonly KakaoTalkWindowFinder _windowFinder = new();
+    private static readonly bool AutoExportFramesEnabled = false;
+
     private readonly WindowCaptureService _captureService = new();
     private readonly WindowsGraphicsCaptureService _windowsGraphicsCaptureService = new();
     private readonly OverlayWindow _overlayWindow = new();
@@ -54,6 +59,13 @@ public partial class MainWindow : Window
     private Forms.NotifyIcon? _trayIcon;
     private double _dimOpacityValue = DefaultDimOpacity;
     private bool _isPrivacyModeEnabled;
+    private bool _isFrameProcessing;
+    private int _filterPipelineVersion;
+    private DateTime _lastCandidateGridUpdateUtc = DateTime.MinValue;
+    private DateTime _lastFilterProcessFinishedUtc = DateTime.MinValue;
+    private BitmapSource? _lastProcessedFrame;
+    private WindowInfo? _cachedMainWindow;
+    private DateTime _lastWindowDiscoveryUtc = DateTime.MinValue;
     private readonly FilterTuning _invertTuning = new();
     private readonly FilterTuning _smartTuning = new()
     {
@@ -82,7 +94,7 @@ public partial class MainWindow : Window
 
         _timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(200)
+            Interval = TimeSpan.FromMilliseconds(1000)
         };
         _timer.Tick += OnTick;
 
@@ -212,24 +224,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var candidates = _windowFinder.GetCandidates();
-        var mainWindow = _windowFinder.FindMainWindow();
-
-        CandidatesGrid.ItemsSource = candidates
-            .Select(window => new
-            {
-                Handle = $"0x{window.Handle:X}",
-                window.Title,
-                window.ClassName,
-                window.Width,
-                window.Height
-            })
-            .ToList();
+        var mainWindow = GetMainWindowSnapshot();
 
         if (mainWindow is null)
         {
             SetStatus("No main window matched", null);
-            CaptureValue.Text = "-";
+            SetTextIfChanged(CaptureValue, "-");
             HideOverlay();
             return;
         }
@@ -238,6 +238,28 @@ public partial class MainWindow : Window
         UpdateOverlay(mainWindow);
     }
 
+
+    private WindowInfo? GetMainWindowSnapshot()
+    {
+        var nowUtc = DateTime.UtcNow;
+        if (_cachedMainWindow is not null &&
+            nowUtc - _lastWindowDiscoveryUtc < WindowDiscoveryInterval &&
+            Win32.TryGetWindowInfo(_cachedMainWindow.Handle, out var cachedWindow) &&
+            cachedWindow is not null &&
+            cachedWindow.Width > 200 &&
+            cachedWindow.Height > 200)
+        {
+            _cachedMainWindow = cachedWindow;
+            return cachedWindow;
+        }
+
+        var candidates = _windowFinder.GetCandidates();
+        _lastWindowDiscoveryUtc = nowUtc;
+        UpdateCandidateWindows(candidates);
+
+        _cachedMainWindow = _windowFinder.FindMainWindow(candidates);
+        return _cachedMainWindow;
+    }
     private void UpdateOverlay(WindowInfo targetWindow)
     {
         if (OverlayEnabledCheckBox.IsChecked != true)
@@ -285,30 +307,109 @@ public partial class MainWindow : Window
 
         if (mode == OverlayMode.Dim)
         {
+            InvalidateFilterPipeline();
             _windowsGraphicsCaptureService.Stop();
-            CaptureValue.Text = "Dim overlay";
+            SetTextIfChanged(CaptureValue, "Dim overlay");
             _overlayWindow.ApplyDim(GetCurrentDimOpacity());
             return;
         }
 
         var capturedFrame = CaptureCurrentFrame(targetWindow, out var captureStatus);
-        CaptureValue.Text = captureStatus;
+        SetTextIfChanged(CaptureValue, captureStatus);
         if (capturedFrame is null)
         {
-            StatusValue.Text = "Capture failed, using dim fallback";
+            InvalidateFilterPipeline();
+            SetTextIfChanged(StatusValue, "Capture failed, using dim fallback");
             _overlayWindow.ApplyDim(GetCurrentDimOpacity());
             return;
         }
 
         TryAutoExportFrames(targetWindow, capturedFrame, captureStatus);
 
-        var outputFrame = ApplyModeToFrame(capturedFrame, mode);
+        QueueCapturedFrameProcessing(capturedFrame, mode);
+    }
 
-        _overlayWindow.ApplyCapturedFrame(outputFrame);
+    private void QueueCapturedFrameProcessing(BitmapSource capturedFrame, OverlayMode mode)
+    {
+        var nowUtc = DateTime.UtcNow;
+        if (_isFrameProcessing || nowUtc - _lastFilterProcessFinishedUtc < GetMinimumFilterProcessInterval(mode))
+        {
+            return;
+        }
+
+        if (ReferenceEquals(capturedFrame, _lastProcessedFrame))
+        {
+            return;
+        }
+
+        if (capturedFrame.CanFreeze && !capturedFrame.IsFrozen)
+        {
+            capturedFrame.Freeze();
+        }
+
+        var tuning = GetCurrentFilterTuning();
+        var strength = GetStrengthValue(tuning);
+        var brightness = GetBrightnessValue(tuning);
+        var contrast = GetContrastValue(tuning);
+        var gamma = GetGammaValue(tuning);
+        var pipelineVersion = _filterPipelineVersion;
+
+        _isFrameProcessing = true;
+        _lastProcessedFrame = capturedFrame;
+        _ = ProcessCapturedFrameAsync(capturedFrame, mode, strength, brightness, contrast, gamma, pipelineVersion);
+    }
+
+    private async Task ProcessCapturedFrameAsync(
+        BitmapSource capturedFrame,
+        OverlayMode mode,
+        double strength,
+        double brightness,
+        double contrast,
+        double gamma,
+        int pipelineVersion)
+    {
+        try
+        {
+            var outputFrame = await Task.Run(() => ApplyModeToFrame(capturedFrame, mode, strength, brightness, contrast, gamma));
+            if (pipelineVersion == _filterPipelineVersion &&
+                GetSelectedMode() == mode &&
+                OverlayEnabledCheckBox.IsChecked == true &&
+                _overlayWindow.IsVisible)
+            {
+                _overlayWindow.ApplyCapturedFrame(outputFrame);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (pipelineVersion == _filterPipelineVersion)
+            {
+                SetTextIfChanged(CaptureValue, "Filter failed: " + ex.GetType().Name);
+                _overlayWindow.ApplyDim(GetCurrentDimOpacity());
+            }
+        }
+        finally
+        {
+            _lastFilterProcessFinishedUtc = DateTime.UtcNow;
+            _isFrameProcessing = false;
+        }
+    }
+
+    private static TimeSpan GetMinimumFilterProcessInterval(OverlayMode mode)
+    {
+        return mode == OverlayMode.SmartInvert ? MinimumSmartProcessInterval : MinimumInvertProcessInterval;
+    }
+
+    private void InvalidateFilterPipeline()
+    {
+        _filterPipelineVersion++;
+        _lastFilterProcessFinishedUtc = DateTime.MinValue;
+        _lastProcessedFrame = null;
     }
 
     private void HideOverlay()
     {
+        InvalidateFilterPipeline();
+
         if (_overlayWindow.IsVisible)
         {
             _overlayWindow.Hide();
@@ -316,6 +417,7 @@ public partial class MainWindow : Window
 
         _lastOverlayWindowInfo = null;
         _overlayOwnerHandle = 0;
+        _cachedMainWindow = null;
     }
 
     private BitmapSource? CaptureCurrentFrame(WindowInfo targetWindow, out string captureStatus)
@@ -377,23 +479,28 @@ public partial class MainWindow : Window
         return Math.Abs(frameAspect - targetAspect) <= 0.18;
     }
 
-    private BitmapSource ApplyModeToFrame(BitmapSource capturedFrame, OverlayMode mode)
+    private BitmapSource ApplyModeToFrame(
+        BitmapSource capturedFrame,
+        OverlayMode mode,
+        double strength,
+        double brightness,
+        double contrast,
+        double gamma)
     {
-        var tuning = GetCurrentFilterTuning();
         return mode switch
         {
             OverlayMode.Invert => _captureService.Invert(
                 capturedFrame,
-                GetStrengthValue(tuning),
-                GetBrightnessValue(tuning),
-                GetContrastValue(tuning),
-                GetGammaValue(tuning)),
+                strength,
+                brightness,
+                contrast,
+                gamma),
             OverlayMode.SmartInvert => _captureService.SmartInvert(
                 capturedFrame,
-                GetStrengthValue(tuning),
-                GetBrightnessValue(tuning),
-                GetContrastValue(tuning),
-                GetGammaValue(tuning)),
+                strength,
+                brightness,
+                contrast,
+                gamma),
             _ => capturedFrame
         };
     }
@@ -408,7 +515,7 @@ public partial class MainWindow : Window
         }
 
         var capturedFrame = CaptureCurrentFrame(mainWindow, out var captureStatus);
-        CaptureValue.Text = captureStatus;
+        SetTextIfChanged(CaptureValue, captureStatus);
         if (capturedFrame is null)
         {
             ExportValue.Text = "Export failed: no frame";
@@ -427,6 +534,11 @@ public partial class MainWindow : Window
 
     private void TryAutoExportFrames(WindowInfo targetWindow, BitmapSource capturedFrame, string captureStatus)
     {
+        if (!AutoExportFramesEnabled)
+        {
+            return;
+        }
+
         var nowUtc = DateTime.UtcNow;
         if (nowUtc - _lastAutoExportUtc < TimeSpan.FromSeconds(2))
         {
@@ -475,6 +587,27 @@ public partial class MainWindow : Window
             $"CapturedAt={DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\nCapture={captureStatus}\r\nHandle=0x{targetWindow.Handle:X}\r\nBounds={targetWindow.X},{targetWindow.Y},{targetWindow.Width},{targetWindow.Height}\r\nFrame={capturedFrame.PixelWidth},{capturedFrame.PixelHeight}\r\nDimOpacity={Math.Round(_dimOpacityValue)}\r\nInvertStrength={Math.Round(_invertTuning.Strength)}\r\nInvertBrightness={Math.Round(_invertTuning.Brightness)}\r\nInvertContrast={Math.Round(_invertTuning.Contrast)}\r\nInvertGamma={Math.Round(_invertTuning.Gamma)}\r\nSmartStrength={Math.Round(_smartTuning.Strength)}\r\nSmartBrightness={Math.Round(_smartTuning.Brightness)}\r\nSmartContrast={Math.Round(_smartTuning.Contrast)}\r\nSmartGamma={Math.Round(_smartTuning.Gamma)}\r\n");
 
         ExportValue.Text = exportDirectory;
+    }
+
+    private void UpdateCandidateWindows(IReadOnlyList<WindowInfo> candidates)
+    {
+        var nowUtc = DateTime.UtcNow;
+        if (CandidatesGrid.ItemsSource is not null && nowUtc - _lastCandidateGridUpdateUtc < TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+
+        _lastCandidateGridUpdateUtc = nowUtc;
+        CandidatesGrid.ItemsSource = candidates
+            .Select(window => new
+            {
+                Handle = $"0x{window.Handle:X}",
+                window.Title,
+                window.ClassName,
+                window.Width,
+                window.Height
+            })
+            .ToList();
     }
 
     private static string GetExportDirectory()
@@ -567,21 +700,29 @@ public partial class MainWindow : Window
 
     private void SetStatus(string status, WindowInfo? window)
     {
-        StatusValue.Text = status;
+        SetTextIfChanged(StatusValue, status);
 
         if (window is null)
         {
-            HandleValue.Text = "-";
-            TitleValue.Text = "-";
-            ClassValue.Text = "-";
-            BoundsValue.Text = "-";
+            SetTextIfChanged(HandleValue, "-");
+            SetTextIfChanged(TitleValue, "-");
+            SetTextIfChanged(ClassValue, "-");
+            SetTextIfChanged(BoundsValue, "-");
             return;
         }
 
-        HandleValue.Text = $"0x{window.Handle:X}";
-        TitleValue.Text = window.Title;
-        ClassValue.Text = window.ClassName;
-        BoundsValue.Text = $"X={window.X}, Y={window.Y}, W={window.Width}, H={window.Height}";
+        SetTextIfChanged(HandleValue, $"0x{window.Handle:X}");
+        SetTextIfChanged(TitleValue, window.Title);
+        SetTextIfChanged(ClassValue, window.ClassName);
+        SetTextIfChanged(BoundsValue, $"X={window.X}, Y={window.Y}, W={window.Width}, H={window.Height}");
+    }
+
+    private static void SetTextIfChanged(TextBlock textBlock, string value)
+    {
+        if (textBlock.Text != value)
+        {
+            textBlock.Text = value;
+        }
     }
 
     private void OverlayEnabledChanged(object sender, RoutedEventArgs e)
@@ -615,6 +756,7 @@ public partial class MainWindow : Window
 
         StoreCurrentParameterValue();
         UpdateParameterText();
+        InvalidateFilterPipeline();
         Refresh();
     }
 
@@ -627,6 +769,7 @@ public partial class MainWindow : Window
 
         StoreCurrentParameterValue();
         UpdateParameterText();
+        InvalidateFilterPipeline();
         Refresh();
     }
 
@@ -638,6 +781,7 @@ public partial class MainWindow : Window
         }
 
         ConfigureParameterSlider();
+        InvalidateFilterPipeline();
         Refresh();
     }
 

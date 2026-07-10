@@ -1,14 +1,12 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
-using System.Windows.Media;
 using System.Windows.Media.Imaging;
-using KakaoTalkFilterLab.Models;
 using KakaoTalkFilterLab.Native;
 
 namespace KakaoTalkFilterLab;
 
-public partial class OverlayWindow : Window
+public partial class FrameOverlayWindow : Window
 {
     private const int WmNcHitTest = 0x0084;
     private const int HtTransparent = -1;
@@ -16,74 +14,23 @@ public partial class OverlayWindow : Window
     private const double TitleButtonsVisibleWidth = 138;
     private const double TitleButtonsVisibleHeight = 38;
     private bool _isPrivacyModeEnabled;
-    private byte? _lastDimAlpha;
-    private byte? _lastDarkFilterAlpha;
 
-    public OverlayWindow()
+    public FrameOverlayWindow()
     {
         InitializeComponent();
         SourceInitialized += OnSourceInitialized;
         SizeChanged += (_, _) => UpdatePrivacyMaskLayout();
     }
 
-    public void ApplyDim(byte alpha)
-    {
-        if (_lastDimAlpha == alpha &&
-            _lastDarkFilterAlpha is null &&
-            CaptureImage.Visibility == Visibility.Collapsed &&
-            DimFill.Visibility == Visibility.Visible)
-        {
-            return;
-        }
-
-        _lastDimAlpha = alpha;
-        _lastDarkFilterAlpha = null;
-        CaptureImage.Source = null;
-        CaptureImage.Visibility = Visibility.Collapsed;
-        DimFill.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(alpha, 0, 0, 0));
-        DimFill.Visibility = Visibility.Visible;
-    }
-
-    public void ApplyDarkFilter(byte alpha)
-    {
-        if (_lastDarkFilterAlpha == alpha &&
-            _lastDimAlpha is null &&
-            CaptureImage.Visibility == Visibility.Collapsed &&
-            DimFill.Visibility == Visibility.Visible)
-        {
-            return;
-        }
-
-        _lastDimAlpha = null;
-        _lastDarkFilterAlpha = alpha;
-        CaptureImage.Source = null;
-        CaptureImage.Visibility = Visibility.Collapsed;
-        DimFill.Background = CreateDarkFilterBrush(alpha);
-        DimFill.Visibility = Visibility.Visible;
-    }
-
     public void ApplyCapturedFrame(BitmapSource frame)
     {
-        if (ReferenceEquals(CaptureImage.Source, frame) &&
-            CaptureImage.Visibility == Visibility.Visible &&
-            DimFill.Visibility == Visibility.Collapsed)
+        if (ReferenceEquals(CaptureImage.Source, frame) && CaptureImage.Visibility == Visibility.Visible)
         {
             return;
         }
 
-        _lastDimAlpha = null;
-        _lastDarkFilterAlpha = null;
         CaptureImage.Source = frame;
         CaptureImage.Visibility = Visibility.Visible;
-        DimFill.Visibility = Visibility.Collapsed;
-    }
-
-    private static System.Windows.Media.Brush CreateDarkFilterBrush(byte alpha)
-    {
-        var tintAlpha = (byte)Math.Clamp((int)alpha, 0, 220);
-        var brush = new SolidColorBrush(System.Windows.Media.Color.FromArgb(tintAlpha, 2, 5, 10));
-        brush.Freeze();
-        return brush;
     }
 
     public void SetPrivacyMode(bool isEnabled)
@@ -97,6 +44,12 @@ public partial class OverlayWindow : Window
         _isPrivacyModeEnabled = isEnabled;
         PrivacyMaskLayer.Visibility = desiredVisibility;
         UpdatePrivacyMaskLayout();
+    }
+
+    public void ClearFrame()
+    {
+        CaptureImage.Source = null;
+        CaptureImage.Visibility = Visibility.Collapsed;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)

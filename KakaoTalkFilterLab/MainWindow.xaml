@@ -1,4 +1,4 @@
-<Window x:Class="KakaoTalkFilterLab.MainWindow"
+﻿<Window x:Class="KakaoTalkFilterLab.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -97,6 +97,16 @@
                             <ComboBoxItem Content="Dim" />
                             <ComboBoxItem Content="Invert" />
                             <ComboBoxItem Content="Smart" />
+                            <ComboBoxItem Content="Dark" />
+                        </ComboBox>
+                        <TextBlock VerticalAlignment="Center" Foreground="#AAA" Text="Perf" />
+                        <ComboBox x:Name="PerformanceComboBox"
+                                  Width="92"
+                                  Margin="8,0,12,0"
+                                  SelectedIndex="1">
+                            <ComboBoxItem Content="Fast" />
+                            <ComboBoxItem Content="Balanced" />
+                            <ComboBoxItem Content="Low" />
                         </ComboBox>
                         <TextBlock x:Name="ParameterLabel"
                                    VerticalAlignment="Center"

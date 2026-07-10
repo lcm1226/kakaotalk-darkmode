@@ -16,9 +16,13 @@ internal static class Win32
     private const int WsExNoactivate = 0x08000000;
     public const int WmHotkey = 0x0312;
     public const uint ModControl = 0x0002;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpNoZorder = 0x0004;
+    private const uint SwpFrameChanged = 0x0020;
     private const uint SwpShowWindow = 0x0040;
+    private const int SwHide = 0;
 
     public delegate bool EnumWindowsProc(nint hwnd, nint lParam);
 
@@ -97,6 +101,9 @@ internal static class Win32
         int cx,
         int cy,
         uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(nint hwnd, int nCmdShow);
 
     [DllImport("user32.dll")]
     private static extern bool RegisterHotKey(nint hwnd, int id, uint fsModifiers, uint vk);
@@ -214,7 +221,9 @@ internal static class Win32
         var current = GetWindowLongPtr(hwnd, GwlExstyle).ToInt64();
         var updated = current | WsExTransparent | WsExLayered | WsExToolwindow | WsExNoactivate;
         _ = SetWindowLongPtr(hwnd, GwlExstyle, (nint)updated);
+        _ = SetWindowPos(hwnd, nint.Zero, 0, 0, 0, 0, SwpNoActivate | SwpNoZorder | SwpNoMove | SwpNoSize | SwpFrameChanged);
     }
+
 
     public static bool MoveOverlayToBounds(nint overlayHwnd, int x, int y, int width, int height, bool showWindow)
     {
@@ -232,6 +241,14 @@ internal static class Win32
             width,
             height,
             flags);
+    }
+
+    public static void HideWindow(nint hwnd)
+    {
+        if (hwnd != nint.Zero)
+        {
+            _ = ShowWindow(hwnd, SwHide);
+        }
     }
 
     public static bool TryRegisterHotKey(nint hwnd, int id, uint modifiers, uint virtualKey)

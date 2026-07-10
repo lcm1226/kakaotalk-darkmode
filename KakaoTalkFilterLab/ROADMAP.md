@@ -1,4 +1,4 @@
-﻿# KakaoTalk Filter Lab Roadmap
+# KakaoTalk Filter Lab Roadmap
 
 ## Goal
 - `Smart` mode should preserve KakaoTalk profile-image regions while keeping text close to `Invert` clarity.
@@ -66,3 +66,6 @@
 ## Resume Notes
 - If the project folder moves, continue from this file plus `CODEX_CONTINUITY.md`.
 - All important paths in the continuity file are workspace-relative on purpose.
+## Performance / Visual Backlog
+- Invert-first optimization: keep Invert on the direct WGC transform path whenever brightness/contrast/gamma are at defaults.
+- WGC yellow capture border: currently attempted via runtime reflection on `GraphicsCaptureSession.IsBorderRequired`; if yellow corners persist on this target SDK/runtime, revisit with a newer Windows SDK/WinRT projection or accept as an OS capture indicator rather than adding expensive masking.

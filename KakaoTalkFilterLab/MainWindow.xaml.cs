@@ -1,8 +1,9 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using System.IO;
+using System.Numerics;
 using System.Text.Json;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -28,6 +29,7 @@ public partial class MainWindow : Window
     private const double GammaMinimum = 60;
     private const double GammaMaximum = 180;
     private const double DefaultDimOpacity = 115;
+    private const double DefaultDarkFilterStrength = 150;
     private const double DefaultFilterStrength = 100;
     private const double DefaultBrightness = 0;
     private const double DefaultContrast = 100;
@@ -37,10 +39,19 @@ public partial class MainWindow : Window
     private const double DefaultSmartContrast = 120;
     private const double DefaultSmartGamma = 90;
     private const int DefaultModeIndex = 0;
+    private const int DefaultPerformanceProfileIndex = 1;
     private const int PrivacyModeHotKeyId = 0x4B48;
-    private static readonly TimeSpan MinimumInvertProcessInterval = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan LowCostOverlayInterval = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan MinimumInvertProcessInterval = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan MinimumSmartProcessInterval = TimeSpan.FromMilliseconds(3000);
     private static readonly TimeSpan WindowDiscoveryInterval = TimeSpan.FromSeconds(2);
+    private const int FrameSignatureRows = 12;
+    private const int FrameSignatureColumns = 16;
+    private const int StableFrameDistanceThreshold = 2;
+    private const int MotionFrameDistanceThreshold = 10;
+    private static readonly TimeSpan MotionDetectionWindow = TimeSpan.FromMilliseconds(850);
+    private static readonly TimeSpan MotionSlowdownHoldDuration = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan MotionSlowdownProcessInterval = TimeSpan.FromMilliseconds(1200);
 
     private readonly DispatcherTimer _timer;
     private readonly KakaoTalkWindowFinder _windowFinder = new();
@@ -49,21 +60,29 @@ public partial class MainWindow : Window
     private readonly WindowCaptureService _captureService = new();
     private readonly WindowsGraphicsCaptureService _windowsGraphicsCaptureService = new();
     private readonly OverlayWindow _overlayWindow = new();
+    private readonly FrameOverlayWindow _frameOverlayWindow = new();
+    private readonly NativeOverlayWindow _nativeOverlayWindow = new();
     private readonly string _settingsPath = GetSettingsPath();
     private bool _isUiReady;
     private WindowInfo? _lastOverlayWindowInfo;
     private nint _overlayOwnerHandle;
+    private Window? _activeOverlayWindow;
     private DateTime _lastAutoExportUtc = DateTime.MinValue;
     private bool _isUpdatingParameterUi;
     private bool _isExitRequested;
     private Forms.NotifyIcon? _trayIcon;
     private double _dimOpacityValue = DefaultDimOpacity;
+    private double _darkFilterStrengthValue = DefaultDarkFilterStrength;
     private bool _isPrivacyModeEnabled;
     private bool _isFrameProcessing;
+    private bool _isCapturePipelineStopped = true;
     private int _filterPipelineVersion;
     private DateTime _lastCandidateGridUpdateUtc = DateTime.MinValue;
     private DateTime _lastFilterProcessFinishedUtc = DateTime.MinValue;
     private BitmapSource? _lastProcessedFrame;
+    private FrameSignature? _lastCapturedFrameSignature;
+    private DateTime _lastCapturedFrameSignatureUtc = DateTime.MinValue;
+    private DateTime _motionSlowdownUntilUtc = DateTime.MinValue;
     private WindowInfo? _cachedMainWindow;
     private DateTime _lastWindowDiscoveryUtc = DateTime.MinValue;
     private readonly FilterTuning _invertTuning = new();
@@ -90,11 +109,12 @@ public partial class MainWindow : Window
         ContrastSlider.ValueChanged += FilterSliderChanged;
         GammaSlider.ValueChanged += FilterSliderChanged;
         ModeComboBox.SelectionChanged += ModeChanged;
+        PerformanceComboBox.SelectionChanged += PerformanceChanged;
         ExportFramesButton.Click += ExportFramesClicked;
 
         _timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(1000)
+            Interval = TimeSpan.FromMilliseconds(500)
         };
         _timer.Tick += OnTick;
 
@@ -102,6 +122,8 @@ public partial class MainWindow : Window
         {
             _isUiReady = true;
             PrivacyModeCheckBox.IsChecked = _isPrivacyModeEnabled;
+            PerformanceComboBox.SelectedIndex = NormalizePerformanceProfileIndex(PerformanceComboBox.SelectedIndex);
+            ConfigureTimerInterval();
             ConfigureParameterSlider();
             Refresh();
             _timer.Start();
@@ -114,7 +136,9 @@ public partial class MainWindow : Window
             UnregisterPrivacyModeHotKey();
             _trayIcon?.Dispose();
             _windowsGraphicsCaptureService.Dispose();
+            _nativeOverlayWindow.Dispose();
             _overlayWindow.Close();
+            _frameOverlayWindow.Close();
         };
 
         Closing += MainWindowClosing;
@@ -275,7 +299,33 @@ public partial class MainWindow : Window
             return;
         }
 
-        var helper = new System.Windows.Interop.WindowInteropHelper(_overlayWindow);
+        var mode = GetSelectedMode();
+        if (UseNativeLowCostOverlay(mode))
+        {
+            ApplyNativeLowCostOverlay(targetWindow, mode);
+            return;
+        }
+
+        _nativeOverlayWindow.Hide();
+
+        var overlayWindow = GetOverlayWindow(mode);
+        var inactiveOverlayWindow = ReferenceEquals(overlayWindow, _overlayWindow)
+            ? (Window)_frameOverlayWindow
+            : _overlayWindow;
+
+        if (inactiveOverlayWindow.IsVisible)
+        {
+            inactiveOverlayWindow.Hide();
+        }
+
+        if (!ReferenceEquals(_activeOverlayWindow, overlayWindow))
+        {
+            _lastOverlayWindowInfo = null;
+            _overlayOwnerHandle = 0;
+            _activeOverlayWindow = overlayWindow;
+        }
+
+        var helper = new WindowInteropHelper(overlayWindow);
         var overlayHwnd = helper.EnsureHandle();
 
         if (_overlayOwnerHandle != targetWindow.Handle)
@@ -284,12 +334,14 @@ public partial class MainWindow : Window
             _overlayOwnerHandle = targetWindow.Handle;
         }
 
-        if (!_overlayWindow.IsVisible)
+        var didShowOverlay = false;
+        if (!overlayWindow.IsVisible)
         {
-            _overlayWindow.Show();
+            overlayWindow.Show();
+            didShowOverlay = true;
         }
 
-        _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        SetPrivacyModeForOverlay(mode);
 
         var shouldShowWindow = _lastOverlayWindowInfo is null;
         if (_lastOverlayWindowInfo is null || _lastOverlayWindowInfo != targetWindow)
@@ -301,37 +353,118 @@ public partial class MainWindow : Window
                 targetWindow.Width,
                 targetWindow.Height,
                 shouldShowWindow);
+            EnableOverlayClickThrough(overlayWindow, overlayHwnd);
 
             _lastOverlayWindowInfo = targetWindow;
+        }
+        else if (didShowOverlay)
+        {
+            EnableOverlayClickThrough(overlayWindow, overlayHwnd);
         }
 
         ApplyCurrentMode(targetWindow);
     }
 
+    private void EnableOverlayClickThrough(Window overlayWindow, nint overlayHwnd)
+    {
+        Win32.EnableClickThrough(overlayHwnd);
+    }
+
+
+    private Window GetOverlayWindow(OverlayMode mode)
+    {
+        return mode is OverlayMode.Dim or OverlayMode.DarkFilter ? _overlayWindow : _frameOverlayWindow;
+    }
+
+    private bool UseNativeLowCostOverlay(OverlayMode mode)
+    {
+        return !_isPrivacyModeEnabled && mode is OverlayMode.Dim or OverlayMode.DarkFilter;
+    }
+
+    private void ApplyNativeLowCostOverlay(WindowInfo targetWindow, OverlayMode mode)
+    {
+        StopCapturePipeline();
+        HideFrameOverlay();
+        if (_overlayWindow.IsVisible)
+        {
+            _overlayWindow.Hide();
+        }
+
+        _activeOverlayWindow = null;
+        _lastOverlayWindowInfo = null;
+        _overlayOwnerHandle = 0;
+
+        var alpha = mode == OverlayMode.DarkFilter
+            ? GetCurrentDarkFilterStrength()
+            : GetCurrentDimOpacity();
+        SetTextIfChanged(CaptureValue, mode == OverlayMode.DarkFilter ? "Native dark overlay" : "Native dim overlay");
+        _nativeOverlayWindow.Show(
+            targetWindow.Handle,
+            targetWindow.X,
+            targetWindow.Y,
+            targetWindow.Width,
+            targetWindow.Height,
+            alpha);
+    }
+
+    private void SetPrivacyModeForOverlay(OverlayMode mode)
+    {
+        if (mode is OverlayMode.Dim or OverlayMode.DarkFilter)
+        {
+            _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        }
+        else
+        {
+            _frameOverlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        }
+    }
     private void ApplyCurrentMode(WindowInfo targetWindow)
     {
         var mode = GetSelectedMode();
 
         if (mode == OverlayMode.Dim)
         {
-            InvalidateFilterPipeline();
-            _windowsGraphicsCaptureService.Stop();
+            StopCapturePipeline();
+            HideFrameOverlay();
             SetTextIfChanged(CaptureValue, "Dim overlay");
             _overlayWindow.ApplyDim(GetCurrentDimOpacity());
             return;
         }
 
-        var capturedFrame = CaptureCurrentFrame(targetWindow, out var captureStatus);
+        if (mode == OverlayMode.DarkFilter)
+        {
+            StopCapturePipeline();
+            HideFrameOverlay();
+            SetTextIfChanged(CaptureValue, "Dark filter overlay");
+            _overlayWindow.ApplyDarkFilter(GetCurrentDarkFilterStrength());
+            return;
+        }
+
+        _isCapturePipelineStopped = false;
+        var useDirectWgcInvert = CanUseDirectWgcInvert(mode);
+        _windowsGraphicsCaptureService.MinimumFrameCopyInterval = GetMinimumCaptureFrameInterval(mode);
+        _windowsGraphicsCaptureService.ConfigureFrameTransform(
+            useDirectWgcInvert ? WgcFrameTransform.Invert : WgcFrameTransform.None,
+            useDirectWgcInvert ? GetStrengthValue(_invertTuning) : 1.0);
+
+        var capturedFrame = CaptureCurrentFrame(targetWindow, out var captureStatus, out var isWindowsGraphicsCaptureFrame);
         SetTextIfChanged(CaptureValue, captureStatus);
         if (capturedFrame is null)
         {
             InvalidateFilterPipeline();
             SetTextIfChanged(StatusValue, "Capture failed, using dim fallback");
-            _overlayWindow.ApplyDim(GetCurrentDimOpacity());
+            StopCapturePipeline();
+            ApplyCaptureFailureDimFallback(targetWindow);
             return;
         }
 
         TryAutoExportFrames(targetWindow, capturedFrame, captureStatus);
+
+        if (useDirectWgcInvert && isWindowsGraphicsCaptureFrame)
+        {
+            ApplyDirectCapturedFrame(capturedFrame, captureStatus);
+            return;
+        }
 
         QueueCapturedFrameProcessing(capturedFrame, mode);
     }
@@ -345,6 +478,11 @@ public partial class MainWindow : Window
         }
 
         if (ReferenceEquals(capturedFrame, _lastProcessedFrame))
+        {
+            return;
+        }
+
+        if (ShouldSkipCapturedFrame(capturedFrame, mode, nowUtc))
         {
             return;
         }
@@ -393,9 +531,9 @@ public partial class MainWindow : Window
             if (pipelineVersion == _filterPipelineVersion &&
                 GetSelectedMode() == mode &&
                 OverlayEnabledCheckBox.IsChecked == true &&
-                _overlayWindow.IsVisible)
+                _frameOverlayWindow.IsVisible)
             {
-                _overlayWindow.ApplyCapturedFrame(outputFrame);
+                _frameOverlayWindow.ApplyCapturedFrame(outputFrame);
             }
         }
         catch (Exception ex)
@@ -403,7 +541,7 @@ public partial class MainWindow : Window
             if (pipelineVersion == _filterPipelineVersion)
             {
                 SetTextIfChanged(CaptureValue, "Filter failed: " + ex.GetType().Name);
-                _overlayWindow.ApplyDim(GetCurrentDimOpacity());
+                _frameOverlayWindow.ClearFrame();
             }
         }
         finally
@@ -413,9 +551,192 @@ public partial class MainWindow : Window
         }
     }
 
-    private static TimeSpan GetMinimumFilterProcessInterval(OverlayMode mode)
+    private TimeSpan GetMinimumFilterProcessInterval(OverlayMode mode)
     {
-        return mode == OverlayMode.SmartInvert ? MinimumSmartProcessInterval : MinimumInvertProcessInterval;
+        var interval = mode == OverlayMode.SmartInvert ? MinimumSmartProcessInterval : GetInvertProfileInterval();
+        return GetMotionAwareInterval(mode, interval);
+    }
+
+    private TimeSpan GetMinimumCaptureFrameInterval(OverlayMode mode)
+    {
+        var interval = mode == OverlayMode.SmartInvert
+            ? TimeSpan.FromMilliseconds(3000)
+            : GetInvertProfileInterval();
+        return GetMotionAwareInterval(mode, interval);
+    }
+
+    private void ConfigureTimerInterval()
+    {
+        _timer.Interval = GetSelectedMode() switch
+        {
+            OverlayMode.Dim or OverlayMode.DarkFilter => LowCostOverlayInterval,
+            OverlayMode.SmartInvert => TimeSpan.FromMilliseconds(750),
+            _ => GetInvertProfileInterval()
+        };
+    }
+
+    private TimeSpan GetInvertProfileInterval()
+    {
+        return GetPerformanceProfileIndex() switch
+        {
+            0 => TimeSpan.FromMilliseconds(250),
+            2 => TimeSpan.FromMilliseconds(900),
+            _ => MinimumInvertProcessInterval
+        };
+    }
+
+    private int GetPerformanceProfileIndex()
+    {
+        return NormalizePerformanceProfileIndex(PerformanceComboBox.SelectedIndex);
+    }
+
+    private static int NormalizePerformanceProfileIndex(int index)
+    {
+        return index is >= 0 and <= 2 ? index : DefaultPerformanceProfileIndex;
+    }
+
+    private bool ShouldSkipCapturedFrame(BitmapSource capturedFrame, OverlayMode mode, DateTime nowUtc)
+    {
+        if (mode != OverlayMode.Invert || !TryCreateFrameSignature(capturedFrame, out var signature))
+        {
+            return false;
+        }
+
+        var previousSignature = _lastCapturedFrameSignature;
+        var previousSignatureUtc = _lastCapturedFrameSignatureUtc;
+        _lastCapturedFrameSignature = signature;
+        _lastCapturedFrameSignatureUtc = nowUtc;
+
+        if (previousSignature is null ||
+            previousSignature.Value.Width != signature.Width ||
+            previousSignature.Value.Height != signature.Height)
+        {
+            return false;
+        }
+
+        var frameDistance = GetFrameSignatureDistance(signature, previousSignature.Value);
+        if (frameDistance <= StableFrameDistanceThreshold)
+        {
+            return true;
+        }
+
+        if (previousSignatureUtc != DateTime.MinValue &&
+            nowUtc - previousSignatureUtc <= MotionDetectionWindow &&
+            frameDistance >= MotionFrameDistanceThreshold)
+        {
+            _motionSlowdownUntilUtc = nowUtc + MotionSlowdownHoldDuration;
+        }
+
+        return nowUtc < _motionSlowdownUntilUtc &&
+               nowUtc - _lastFilterProcessFinishedUtc < MotionSlowdownProcessInterval;
+    }
+
+    private TimeSpan GetMotionAwareInterval(OverlayMode mode, TimeSpan baseInterval)
+    {
+        if (mode != OverlayMode.Invert || DateTime.UtcNow >= _motionSlowdownUntilUtc)
+        {
+            return baseInterval;
+        }
+
+        return baseInterval < MotionSlowdownProcessInterval ? MotionSlowdownProcessInterval : baseInterval;
+    }
+
+    private static bool TryCreateFrameSignature(BitmapSource frame, out FrameSignature signature)
+    {
+        signature = default;
+        if (frame.PixelWidth <= 0 || frame.PixelHeight <= 0)
+        {
+            return false;
+        }
+
+        var bitsPerPixel = frame.Format.BitsPerPixel;
+        if (bitsPerPixel is not 24 and not 32)
+        {
+            return false;
+        }
+
+        var bytesPerPixel = bitsPerPixel / 8;
+        if (bytesPerPixel < 3)
+        {
+            return false;
+        }
+
+        var rows = Math.Min(FrameSignatureRows, frame.PixelHeight);
+        var columns = Math.Min(FrameSignatureColumns, frame.PixelWidth);
+        var stride = frame.PixelWidth * bytesPerPixel;
+        var rowBuffer = new byte[stride];
+        ulong hash = 1469598103934665603UL;
+        long lumaSum = 0;
+        var sampleCount = 0;
+
+        for (var row = 0; row < rows; row++)
+        {
+            var y = rows == 1 ? frame.PixelHeight / 2 : row * (frame.PixelHeight - 1) / (rows - 1);
+            frame.CopyPixels(new Int32Rect(0, y, frame.PixelWidth, 1), rowBuffer, stride, 0);
+
+            for (var column = 0; column < columns; column++)
+            {
+                var x = columns == 1 ? frame.PixelWidth / 2 : column * (frame.PixelWidth - 1) / (columns - 1);
+                var index = x * bytesPerPixel;
+                var blue = rowBuffer[index];
+                var green = rowBuffer[index + 1];
+                var red = rowBuffer[index + 2];
+                var luma = (red * 3 + green * 4 + blue) >> 3;
+
+                hash ^= (byte)luma;
+                hash *= 1099511628211UL;
+                lumaSum += luma;
+                sampleCount++;
+            }
+        }
+
+        signature = new FrameSignature(frame.PixelWidth, frame.PixelHeight, hash, sampleCount == 0 ? 0 : (int)(lumaSum / sampleCount));
+        return sampleCount > 0;
+    }
+
+    private static int GetFrameSignatureDistance(FrameSignature current, FrameSignature previous)
+    {
+        return BitOperations.PopCount(current.Hash ^ previous.Hash) + Math.Abs(current.AverageLuma - previous.AverageLuma);
+    }
+
+    private bool CanUseDirectWgcInvert(OverlayMode mode)
+    {
+        if (mode != OverlayMode.Invert)
+        {
+            return false;
+        }
+
+        return IsDirectWgcInvertCompatible(_invertTuning);
+    }
+
+    private static bool IsDirectWgcInvertCompatible(FilterTuning tuning)
+    {
+        return Math.Abs(tuning.Brightness - DefaultBrightness) < 0.001 &&
+               Math.Abs(tuning.Contrast - DefaultContrast) < 0.001 &&
+               Math.Abs(tuning.Gamma - DefaultGamma) < 0.001;
+    }
+
+    private void ApplyDirectCapturedFrame(BitmapSource capturedFrame, string captureStatus)
+    {
+        if (ReferenceEquals(capturedFrame, _lastProcessedFrame))
+        {
+            return;
+        }
+
+        if (ShouldSkipCapturedFrame(capturedFrame, OverlayMode.Invert, DateTime.UtcNow))
+        {
+            return;
+        }
+
+        if (capturedFrame.CanFreeze && !capturedFrame.IsFrozen)
+        {
+            capturedFrame.Freeze();
+        }
+
+        _lastProcessedFrame = capturedFrame;
+        _lastFilterProcessFinishedUtc = DateTime.UtcNow;
+        SetTextIfChanged(CaptureValue, captureStatus + " direct invert");
+        _frameOverlayWindow.ApplyCapturedFrame(capturedFrame);
     }
 
     private void InvalidateFilterPipeline()
@@ -423,25 +744,88 @@ public partial class MainWindow : Window
         _filterPipelineVersion++;
         _lastFilterProcessFinishedUtc = DateTime.MinValue;
         _lastProcessedFrame = null;
+        _lastCapturedFrameSignature = null;
+        _lastCapturedFrameSignatureUtc = DateTime.MinValue;
+        _motionSlowdownUntilUtc = DateTime.MinValue;
+    }
+
+    private void StopCapturePipeline()
+    {
+        if (!_isCapturePipelineStopped)
+        {
+            InvalidateFilterPipeline();
+            _windowsGraphicsCaptureService.Stop();
+            _isCapturePipelineStopped = true;
+        }
     }
 
     private void HideOverlay()
     {
-        InvalidateFilterPipeline();
+        StopCapturePipeline();
+        _nativeOverlayWindow.Hide();
 
         if (_overlayWindow.IsVisible)
         {
             _overlayWindow.Hide();
         }
 
+        HideFrameOverlay();
+
         _lastOverlayWindowInfo = null;
         _overlayOwnerHandle = 0;
+        _activeOverlayWindow = null;
         _cachedMainWindow = null;
     }
 
-    private BitmapSource? CaptureCurrentFrame(WindowInfo targetWindow, out string captureStatus)
+    private void HideFrameOverlay()
+    {
+        _frameOverlayWindow.ClearFrame();
+        var frameHwnd = new WindowInteropHelper(_frameOverlayWindow).Handle;
+        Win32.HideWindow(frameHwnd);
+        if (_frameOverlayWindow.IsVisible)
+        {
+            _frameOverlayWindow.Hide();
+        }
+    }
+
+    private void ApplyCaptureFailureDimFallback(WindowInfo targetWindow)
+    {
+        _frameOverlayWindow.ClearFrame();
+        if (_frameOverlayWindow.IsVisible)
+        {
+            _frameOverlayWindow.Hide();
+        }
+
+        _activeOverlayWindow = _overlayWindow;
+        _lastOverlayWindowInfo = null;
+        _overlayOwnerHandle = 0;
+
+        var helper = new WindowInteropHelper(_overlayWindow);
+        var overlayHwnd = helper.EnsureHandle();
+        helper.Owner = targetWindow.Handle;
+        _overlayOwnerHandle = targetWindow.Handle;
+
+        if (!_overlayWindow.IsVisible)
+        {
+            _overlayWindow.Show();
+        }
+
+        _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        _ = Win32.MoveOverlayToBounds(
+            overlayHwnd,
+            targetWindow.X,
+            targetWindow.Y,
+            targetWindow.Width,
+            targetWindow.Height,
+            true);
+        Win32.EnableClickThrough(overlayHwnd);
+        _lastOverlayWindowInfo = targetWindow;
+        _overlayWindow.ApplyDim(GetCurrentDimOpacity());
+    }
+    private BitmapSource? CaptureCurrentFrame(WindowInfo targetWindow, out string captureStatus, out bool isWindowsGraphicsCaptureFrame)
     {
         BitmapSource? capturedFrame = null;
+        isWindowsGraphicsCaptureFrame = false;
         captureStatus = "PrintWindow";
 
         try
@@ -449,10 +833,12 @@ public partial class MainWindow : Window
             if (_windowsGraphicsCaptureService.StartOrUpdate(targetWindow.Handle))
             {
                 capturedFrame = _windowsGraphicsCaptureService.LatestFrame;
+                isWindowsGraphicsCaptureFrame = capturedFrame is not null;
                 captureStatus = _windowsGraphicsCaptureService.Status;
                 if (capturedFrame is not null && !IsValidCapturedFrame(capturedFrame, targetWindow))
                 {
                     capturedFrame = null;
+                    isWindowsGraphicsCaptureFrame = false;
                     captureStatus += " invalid-size";
                 }
             }
@@ -469,6 +855,7 @@ public partial class MainWindow : Window
 
         if (capturedFrame is null)
         {
+            isWindowsGraphicsCaptureFrame = false;
             capturedFrame = _captureService.Capture(targetWindow);
             if (capturedFrame is not null)
             {
@@ -533,7 +920,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var capturedFrame = CaptureCurrentFrame(mainWindow, out var captureStatus);
+        _windowsGraphicsCaptureService.ConfigureFrameTransform(WgcFrameTransform.None);
+        var capturedFrame = CaptureCurrentFrame(mainWindow, out var captureStatus, out _);
         SetTextIfChanged(CaptureValue, captureStatus);
         if (capturedFrame is null)
         {
@@ -641,6 +1029,7 @@ public partial class MainWindow : Window
         {
             1 => OverlayMode.Invert,
             2 => OverlayMode.SmartInvert,
+            3 => OverlayMode.DarkFilter,
             _ => OverlayMode.Dim
         };
     }
@@ -648,6 +1037,11 @@ public partial class MainWindow : Window
     private byte GetCurrentDimOpacity()
     {
         return (byte)Math.Clamp((int)Math.Round(_dimOpacityValue), 0, 255);
+    }
+
+    private byte GetCurrentDarkFilterStrength()
+    {
+        return (byte)Math.Clamp((int)Math.Round(_darkFilterStrengthValue), 0, 255);
     }
 
     private void ConfigureParameterSlider()
@@ -662,6 +1056,16 @@ public partial class MainWindow : Window
                 OpacitySlider.Minimum = DimOpacityMinimum;
                 OpacitySlider.Maximum = DimOpacityMaximum;
                 OpacitySlider.Value = _dimOpacityValue;
+                OpacitySlider.Visibility = Visibility.Visible;
+                ParameterValue.Visibility = Visibility.Visible;
+                FilterSettingsPanel.Visibility = Visibility.Collapsed;
+                break;
+            case OverlayMode.DarkFilter:
+                ParameterLabel.Text = "Darkness";
+                ParameterLabel.Visibility = Visibility.Visible;
+                OpacitySlider.Minimum = DimOpacityMinimum;
+                OpacitySlider.Maximum = DimOpacityMaximum;
+                OpacitySlider.Value = _darkFilterStrengthValue;
                 OpacitySlider.Visibility = Visibility.Visible;
                 ParameterValue.Visibility = Visibility.Visible;
                 FilterSettingsPanel.Visibility = Visibility.Collapsed;
@@ -693,6 +1097,9 @@ public partial class MainWindow : Window
             case OverlayMode.Dim:
                 ParameterValue.Text = $"{Math.Round(GetCurrentDimOpacity() / 255.0 * 100)}%";
                 break;
+            case OverlayMode.DarkFilter:
+                ParameterValue.Text = $"{Math.Round(GetCurrentDarkFilterStrength() / 255.0 * 100)}%";
+                break;
             case OverlayMode.Invert:
                 UpdateFilterValueText(_invertTuning);
                 break;
@@ -709,6 +1116,9 @@ public partial class MainWindow : Window
             case OverlayMode.Dim:
                 _dimOpacityValue = OpacitySlider.Value;
                 break;
+            case OverlayMode.DarkFilter:
+                _darkFilterStrengthValue = OpacitySlider.Value;
+                break;
             case OverlayMode.Invert:
                 StoreFilterControls(_invertTuning);
                 break;
@@ -717,7 +1127,6 @@ public partial class MainWindow : Window
                 break;
         }
     }
-
     private void SetStatus(string status, WindowInfo? window)
     {
         SetTextIfChanged(StatusValue, status);
@@ -764,6 +1173,7 @@ public partial class MainWindow : Window
 
         _isPrivacyModeEnabled = PrivacyModeCheckBox.IsChecked == true;
         _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+        _frameOverlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
         Refresh();
     }
 
@@ -801,10 +1211,22 @@ public partial class MainWindow : Window
         }
 
         ConfigureParameterSlider();
+        ConfigureTimerInterval();
         InvalidateFilterPipeline();
         Refresh();
     }
 
+    private void PerformanceChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_isUiReady)
+        {
+            return;
+        }
+
+        ConfigureTimerInterval();
+        InvalidateFilterPipeline();
+        Refresh();
+    }
     protected override void OnClosed(EventArgs e)
     {
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
@@ -838,10 +1260,12 @@ public partial class MainWindow : Window
             }
 
             _dimOpacityValue = Math.Clamp(state.DimOpacity, DimOpacityMinimum, DimOpacityMaximum);
+            _darkFilterStrengthValue = Math.Clamp(state.DarkFilterStrength, DimOpacityMinimum, DimOpacityMaximum);
             _isPrivacyModeEnabled = state.IsPrivacyModeEnabled;
             ApplyPersistedTuning(_invertTuning, state.InvertStrength, state.InvertBrightness, state.InvertContrast, state.InvertGamma);
             ApplyPersistedTuning(_smartTuning, state.SmartStrength, state.SmartBrightness, state.SmartContrast, state.SmartGamma);
-            ModeComboBox.SelectedIndex = Math.Clamp(state.ModeIndex, 0, 2);
+            PerformanceComboBox.SelectedIndex = NormalizePerformanceProfileIndex(state.PerformanceProfileIndex);
+            ModeComboBox.SelectedIndex = Math.Clamp(state.ModeIndex, 0, 3);
         }
         catch
         {
@@ -862,7 +1286,9 @@ public partial class MainWindow : Window
             var state = new PersistedUiState
             {
                 ModeIndex = ModeComboBox.SelectedIndex,
+                PerformanceProfileIndex = GetPerformanceProfileIndex(),
                 DimOpacity = _dimOpacityValue,
+                DarkFilterStrength = _darkFilterStrengthValue,
                 IsPrivacyModeEnabled = _isPrivacyModeEnabled,
                 InvertStrength = _invertTuning.Strength,
                 InvertBrightness = _invertTuning.Brightness,
@@ -968,6 +1394,8 @@ public partial class MainWindow : Window
             "ui-state.json");
     }
 
+    private readonly record struct FrameSignature(int Width, int Height, ulong Hash, int AverageLuma);
+
     private sealed class FilterTuning
     {
         public double Strength { get; set; } = DefaultFilterStrength;
@@ -979,7 +1407,9 @@ public partial class MainWindow : Window
     private sealed class PersistedUiState
     {
         public int ModeIndex { get; set; } = DefaultModeIndex;
+        public int PerformanceProfileIndex { get; set; } = DefaultPerformanceProfileIndex;
         public double DimOpacity { get; set; } = DefaultDimOpacity;
+        public double DarkFilterStrength { get; set; } = DefaultDarkFilterStrength;
         public bool IsPrivacyModeEnabled { get; set; }
         public double InvertStrength { get; set; } = DefaultFilterStrength;
         public double InvertBrightness { get; set; } = DefaultBrightness;
@@ -1002,6 +1432,7 @@ public partial class MainWindow : Window
         else
         {
             _overlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
+            _frameOverlayWindow.SetPrivacyMode(_isPrivacyModeEnabled);
         }
 
         Refresh();

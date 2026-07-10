@@ -10,6 +10,12 @@ using WinRT;
 
 namespace KakaoTalkFilterLab.Services;
 
+internal enum WgcFrameTransform
+{
+    None,
+    Invert
+}
+
 [ComImport]
 [Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -27,7 +33,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
     private const int D3DDriverTypeHardware = 1;
     private const int D3DDriverTypeWarp = 5;
     private const uint D3D11SdkVersion = 7;
-    private static readonly TimeSpan MinimumFrameCopyInterval = TimeSpan.FromMilliseconds(2000);
+    private TimeSpan _minimumFrameCopyInterval = TimeSpan.FromMilliseconds(1000);
 
     private readonly object _sync = new();
     private GraphicsCaptureItem? _item;
@@ -40,8 +46,45 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
     private bool _framePending;
     private DateTime _lastFrameCopyUtc = DateTime.MinValue;
     private string _status = "Idle";
+    private WgcFrameTransform _frameTransform = WgcFrameTransform.None;
+    private double _invertStrength = 1.0;
     private int? _lastCreateItemHResult;
 
+    public TimeSpan MinimumFrameCopyInterval
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _minimumFrameCopyInterval;
+            }
+        }
+        set
+        {
+            lock (_sync)
+            {
+                _minimumFrameCopyInterval = value < TimeSpan.FromMilliseconds(250)
+                    ? TimeSpan.FromMilliseconds(250)
+                    : value;
+            }
+        }
+    }
+    public void ConfigureFrameTransform(WgcFrameTransform transform, double invertStrength = 1.0)
+    {
+        lock (_sync)
+        {
+            invertStrength = Math.Clamp(invertStrength, 0.0, 1.0);
+            if (_frameTransform == transform && Math.Abs(_invertStrength - invertStrength) < 0.0001)
+            {
+                return;
+            }
+
+            _frameTransform = transform;
+            _invertStrength = invertStrength;
+            _latestFrame = null;
+            _lastFrameCopyUtc = DateTime.MinValue;
+        }
+    }
     public bool IsSupported => GraphicsCaptureSession.IsSupported();
 
     public string Status
@@ -121,11 +164,24 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
         _framePool.FrameArrived += OnFrameArrived;
         _session = _framePool.CreateCaptureSession(item);
         _session.IsCursorCaptureEnabled = false;
+        TryDisableCaptureBorder(_session);
         _session.StartCapture();
         SetStatus("WGC starting");
         return true;
     }
 
+    private static void TryDisableCaptureBorder(GraphicsCaptureSession session)
+    {
+        try
+        {
+            var property = session.GetType().GetProperty("IsBorderRequired");
+            property?.SetValue(session, false);
+        }
+        catch
+        {
+            // Older Windows builds can ignore this; the app still works with the OS border.
+        }
+    }
     public void Stop()
     {
         if (_framePool is not null)
@@ -282,7 +338,17 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
             }
 
             var nowUtc = DateTime.UtcNow;
-            if (_framePending || nowUtc - _lastFrameCopyUtc < MinimumFrameCopyInterval)
+            TimeSpan minimumFrameCopyInterval;
+            WgcFrameTransform frameTransform;
+            double invertStrength;
+            lock (_sync)
+            {
+                minimumFrameCopyInterval = _minimumFrameCopyInterval;
+                frameTransform = _frameTransform;
+                invertStrength = _invertStrength;
+            }
+
+            if (_framePending || nowUtc - _lastFrameCopyUtc < minimumFrameCopyInterval)
             {
                 return;
             }
@@ -308,7 +374,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
 
             using var softwareBitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface);
             using var convertedBitmap = SoftwareBitmap.Convert(softwareBitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
-            var bitmapSource = await ConvertToBitmapSourceAsync(convertedBitmap);
+            var bitmapSource = await ConvertToBitmapSourceAsync(convertedBitmap, frameTransform, invertStrength);
 
             lock (_sync)
             {
@@ -329,7 +395,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
         }
     }
 
-    private static async Task<BitmapSource> ConvertToBitmapSourceAsync(SoftwareBitmap bitmap)
+    private static async Task<BitmapSource> ConvertToBitmapSourceAsync(SoftwareBitmap bitmap, WgcFrameTransform transform, double invertStrength)
     {
         var buffer = new Windows.Storage.Streams.Buffer((uint)(bitmap.PixelWidth * bitmap.PixelHeight * 4));
         bitmap.CopyToBuffer(buffer);
@@ -338,6 +404,7 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
         using var reader = DataReader.FromBuffer(buffer);
         reader.ReadBytes(bytes);
 
+        ApplyFrameTransform(bytes, transform, invertStrength);
         await Task.Yield();
 
         var source = BitmapSource.Create(
@@ -354,6 +421,34 @@ internal sealed class WindowsGraphicsCaptureService : IDisposable
         return source;
     }
 
+    private static void ApplyFrameTransform(byte[] bytes, WgcFrameTransform transform, double invertStrength)
+    {
+        if (transform != WgcFrameTransform.Invert)
+        {
+            return;
+        }
+
+        invertStrength = Math.Clamp(invertStrength, 0.0, 1.0);
+        if (invertStrength >= 0.999)
+        {
+            for (var index = 0; index < bytes.Length; index += 4)
+            {
+                bytes[index] = (byte)(255 - bytes[index]);
+                bytes[index + 1] = (byte)(255 - bytes[index + 1]);
+                bytes[index + 2] = (byte)(255 - bytes[index + 2]);
+            }
+
+            return;
+        }
+
+        var inverseStrength = 1.0 - invertStrength;
+        for (var index = 0; index < bytes.Length; index += 4)
+        {
+            bytes[index] = (byte)Math.Clamp((int)Math.Round((bytes[index] * inverseStrength) + ((255 - bytes[index]) * invertStrength)), 0, 255);
+            bytes[index + 1] = (byte)Math.Clamp((int)Math.Round((bytes[index + 1] * inverseStrength) + ((255 - bytes[index + 1]) * invertStrength)), 0, 255);
+            bytes[index + 2] = (byte)Math.Clamp((int)Math.Round((bytes[index + 2] * inverseStrength) + ((255 - bytes[index + 2]) * invertStrength)), 0, 255);
+        }
+    }
     [DllImport("d3d11.dll")]
     private static extern int D3D11CreateDevice(
         nint adapter,

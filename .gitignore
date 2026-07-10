@@ -1,7 +1,13 @@
 KakaoTalkFilterLab/bin/
 KakaoTalkFilterLab/obj/
 KakaoTalkFilterLab/captures/
+KakaoTalkDarkLite/bin/
+KakaoTalkDarkLite/obj/
 captures/
+
+# Local experiments and rollback snapshots
+KakaoTalkMagnifierTest/
+Rollback/
 
 *.user
 *.suo

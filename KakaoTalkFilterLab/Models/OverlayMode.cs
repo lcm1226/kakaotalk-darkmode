@@ -1,8 +1,9 @@
-namespace KakaoTalkFilterLab.Models;
+﻿namespace KakaoTalkFilterLab.Models;
 
 public enum OverlayMode
 {
     Dim,
     Invert,
-    SmartInvert
+    SmartInvert,
+    DarkFilter
 }

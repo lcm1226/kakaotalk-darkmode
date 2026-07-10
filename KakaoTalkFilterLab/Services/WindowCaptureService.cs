@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -45,6 +46,11 @@ internal sealed class WindowCaptureService
         double gamma = 1.0)
     {
         strength = Math.Clamp(strength, 0, 1);
+        if (IsDefaultTone(brightness, contrast, gamma))
+        {
+            return FastInvert(source, strength);
+        }
+
         return Transform(source, (ref byte b, ref byte g, ref byte r, byte a) =>
         {
             var invertedRed = (byte)(255 - r);
@@ -62,6 +68,85 @@ internal sealed class WindowCaptureService
         });
     }
 
+    private static BitmapSource FastInvert(BitmapSource source, double strength)
+    {
+        var bgraSource = EnsureBgra32Source(source);
+        var width = bgraSource.PixelWidth;
+        var height = bgraSource.PixelHeight;
+        var stride = width * 4;
+        var pixelByteCount = stride * height;
+        var pixelBytes = ArrayPool<byte>.Shared.Rent(pixelByteCount);
+
+        try
+        {
+            bgraSource.CopyPixels(pixelBytes, stride, 0);
+            InvertBgra32Pixels(pixelBytes, pixelByteCount, strength);
+            NormalizeOuterEdge(pixelBytes, width, height);
+            return CreateBgra32Bitmap(pixelBytes, width, height, bgraSource.DpiX, bgraSource.DpiY, stride);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(pixelBytes);
+        }
+    }
+
+    private static BitmapSource EnsureBgra32Source(BitmapSource source)
+    {
+        if (source.Format == PixelFormats.Bgra32)
+        {
+            return source;
+        }
+
+        var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+        converted.Freeze();
+        return converted;
+    }
+
+    private static void InvertBgra32Pixels(byte[] pixels, int length, double strength)
+    {
+        if (strength <= 0.001)
+        {
+            return;
+        }
+
+        if (strength >= 0.999)
+        {
+            for (var index = 0; index < length; index += 4)
+            {
+                pixels[index] = (byte)(255 - pixels[index]);
+                pixels[index + 1] = (byte)(255 - pixels[index + 1]);
+                pixels[index + 2] = (byte)(255 - pixels[index + 2]);
+            }
+
+            return;
+        }
+
+        var lookup = CreateInvertBlendLookup(strength);
+        for (var index = 0; index < length; index += 4)
+        {
+            pixels[index] = lookup[pixels[index]];
+            pixels[index + 1] = lookup[pixels[index + 1]];
+            pixels[index + 2] = lookup[pixels[index + 2]];
+        }
+    }
+
+    private static byte[] CreateInvertBlendLookup(double strength)
+    {
+        var lookup = new byte[256];
+        for (var value = 0; value < lookup.Length; value++)
+        {
+            lookup[value] = ClampToByte(value + ((255 - (value * 2)) * strength));
+        }
+
+        return lookup;
+    }
+
+    private static bool IsDefaultTone(double brightness, double contrast, double gamma)
+    {
+        return Math.Abs(brightness) < 0.0001 &&
+               Math.Abs(contrast - 1.0) < 0.0001 &&
+               Math.Abs(gamma - 1.0) < 0.0001;
+    }
     public BitmapSource SmartInvert(
         BitmapSource source,
         double strength = 1.0,
@@ -459,8 +544,7 @@ internal sealed class WindowCaptureService
         PixelTransform transform,
         Action<byte[], int, int>? postProcess = null)
     {
-        var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
-        converted.Freeze();
+        var converted = EnsureBgra32Source(source);
 
         var stride = converted.PixelWidth * 4;
         var pixelBytes = new byte[stride * converted.PixelHeight];
@@ -473,14 +557,19 @@ internal sealed class WindowCaptureService
 
         postProcess?.Invoke(pixelBytes, converted.PixelWidth, converted.PixelHeight);
 
+        return CreateBgra32Bitmap(pixelBytes, converted.PixelWidth, converted.PixelHeight, converted.DpiX, converted.DpiY, stride);
+    }
+
+    private static BitmapSource CreateBgra32Bitmap(byte[] pixels, int width, int height, double dpiX, double dpiY, int stride)
+    {
         var result = BitmapSource.Create(
-            converted.PixelWidth,
-            converted.PixelHeight,
-            converted.DpiX,
-            converted.DpiY,
+            width,
+            height,
+            dpiX,
+            dpiY,
             PixelFormats.Bgra32,
             null,
-            pixelBytes,
+            pixels,
             stride);
 
         result.Freeze();

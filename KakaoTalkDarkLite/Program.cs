@@ -58,7 +58,7 @@ internal sealed class LiteApplication : ApplicationContext
         _windowEventMonitor = new WindowEventMonitor(RefreshOverlay);
         _trayIcon = new NotifyIcon
         {
-            Text = "KakaoTalk Dark Lite",
+            Text = "KakaoTalk Dark Simple",
             Icon = SystemIcons.Application,
             Visible = true,
             ContextMenuStrip = BuildMenu()
@@ -343,7 +343,7 @@ internal sealed class StrengthSliderForm : IDisposable
         _hwnd = NativeMethods.CreateWindowEx(
             WsExToolWindow | WsExNoActivate,
             WindowClassName,
-            "KakaoTalk Dark Lite Strength",
+            "KakaoTalk Dark Simple Strength",
             WsPopup,
             _lastX,
             _lastY,

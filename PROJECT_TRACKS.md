@@ -24,12 +24,17 @@ arrays, or WPF `BitmapSource`. It can replace the older CPU Invert path only
 after visual correctness, input pass-through, frame pacing, CPU, GPU, and
 memory usage are measured on the real KakaoTalk window.
 
-The current tray controls include Enabled, Privacy mode (`Ctrl+H`), and a
-compact invert-strength window with an enable checkbox, a 0-100% slider, and a
-close button. Disabling the effect from this window pauses GPU rendering and
-hides the overlay without rebuilding the WGC session, so re-enabling is
-immediate. Settings are stored on graceful exit in
+The current tray controls include Enabled and Privacy mode (`Ctrl+H`). The
+compact invert-strength window exposes synchronized Enabled and Privacy
+checkboxes, a 0-100% slider, and a close button. Disabling the effect from this
+window pauses GPU rendering and hides the overlay without rebuilding the WGC
+session, so re-enabling is immediate. Settings are stored on graceful exit in
 `%LOCALAPPDATA%\KakaoTalkGpuInvertSpike\settings.json`.
+
+Window discovery accepts only a visible KakaoTalk process window whose title is
+exactly `KakaoTalk` or the Korean localized KakaoTalk title. It never falls back
+to a large untitled or room-titled window, so detached chat windows remain
+excluded.
 
 KakaoTalk location events are marshalled to the WinForms UI thread and
 coalesced into 50 ms refreshes. This keeps repeated Win32/AHK window-position

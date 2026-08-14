@@ -124,7 +124,14 @@ internal sealed class OverlaySmokeTestApplication : ApplicationContext
             return;
         }
 
-        using var slider = new StrengthSliderForm(75, true, _ => { }, _ => { }, () => { });
+        using var slider = new StrengthSliderForm(
+            75,
+            true,
+            true,
+            _ => { },
+            _ => { },
+            _ => { },
+            () => { });
         slider.SaveDiagnosticImage(capturePath);
     }
 }
@@ -186,8 +193,10 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _strengthSlider = new StrengthSliderForm(
             _invertStrength,
             _enabled,
+            _privacyModeEnabled,
             SetInvertStrength,
             SetEnabled,
+            SetPrivacyMode,
             () => SetStrengthControlVisible(false));
         _overlay.PrivacyHotKeyPressed += TogglePrivacyMode;
         _ = _overlay.Handle;
@@ -252,10 +261,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
             CheckOnClick = true
         };
         _privacyModeMenuItem.CheckedChanged += (_, _) =>
-        {
-            _privacyModeEnabled = _privacyModeMenuItem.Checked;
-            ApplyRenderSettings();
-        };
+            SetPrivacyMode(_privacyModeMenuItem.Checked);
         menu.Items.Add(_privacyModeMenuItem);
         _strengthMenuItem = new ToolStripMenuItem($"Invert strength: {_invertStrength}%");
         _strengthMenuItem.Click += (_, _) => SetStrengthControlVisible(true);
@@ -506,14 +512,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void TogglePrivacyMode()
     {
-        if (_privacyModeMenuItem is not null)
-        {
-            _privacyModeMenuItem.Checked = !_privacyModeMenuItem.Checked;
-            return;
-        }
-
-        _privacyModeEnabled = !_privacyModeEnabled;
-        ApplyRenderSettings();
+        SetPrivacyMode(!_privacyModeEnabled);
     }
 
     private void QueueWindowRefresh()
@@ -611,6 +610,23 @@ internal sealed class GpuInvertApplication : ApplicationContext
         }
 
         ApplyRenderSettings();
+    }
+
+    private void SetPrivacyMode(bool enabled)
+    {
+        var changed = _privacyModeEnabled != enabled;
+        _privacyModeEnabled = enabled;
+
+        if (_privacyModeMenuItem is not null && _privacyModeMenuItem.Checked != enabled)
+        {
+            _privacyModeMenuItem.Checked = enabled;
+        }
+
+        _strengthSlider.SetPrivacyMode(enabled);
+        if (changed)
+        {
+            ApplyRenderSettings();
+        }
     }
 
     private void ApplyRenderSettings()

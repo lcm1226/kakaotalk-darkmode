@@ -4,22 +4,28 @@ internal sealed class StrengthSliderForm : Form
 {
     private const int EdgePadding = 4;
     private readonly CheckBox _enabledCheckBox;
+    private readonly CheckBox _privacyModeCheckBox;
     private readonly TrackBar _slider;
     private readonly Action<int> _strengthChanged;
     private readonly Action<bool> _enabledChanged;
+    private readonly Action<bool> _privacyModeChanged;
     private readonly Action _hideRequested;
     private nint _ownerHandle;
     private bool _isSynchronizingEnabled;
+    private bool _isSynchronizingPrivacyMode;
 
     public StrengthSliderForm(
         int strength,
         bool enabled,
+        bool privacyModeEnabled,
         Action<int> strengthChanged,
         Action<bool> enabledChanged,
+        Action<bool> privacyModeChanged,
         Action hideRequested)
     {
         _strengthChanged = strengthChanged;
         _enabledChanged = enabledChanged;
+        _privacyModeChanged = privacyModeChanged;
         _hideRequested = hideRequested;
         Text = "GPU invert strength";
         ClientSize = new Size(224, 40);
@@ -54,11 +60,29 @@ internal sealed class StrengthSliderForm : Form
         {
             AutoEllipsis = true,
             Location = new Point(25, 1),
-            Size = new Size(174, 19),
-            Text = "GPU invert strength",
+            Size = new Size(90, 19),
+            Text = "GPU invert",
             TextAlign = ContentAlignment.MiddleLeft
         };
         titleLabel.Click += (_, _) => _enabledCheckBox.Checked = !_enabledCheckBox.Checked;
+
+        _privacyModeCheckBox = new CheckBox
+        {
+            AccessibleName = "Privacy mode",
+            Checked = privacyModeEnabled,
+            Location = new Point(116, 1),
+            Size = new Size(80, 19),
+            TabStop = false,
+            Text = "Privacy",
+            UseVisualStyleBackColor = true
+        };
+        _privacyModeCheckBox.CheckedChanged += (_, _) =>
+        {
+            if (!_isSynchronizingPrivacyMode)
+            {
+                _privacyModeChanged(_privacyModeCheckBox.Checked);
+            }
+        };
 
         var closeButton = new Button
         {
@@ -97,6 +121,7 @@ internal sealed class StrengthSliderForm : Form
 
         Controls.Add(_enabledCheckBox);
         Controls.Add(titleLabel);
+        Controls.Add(_privacyModeCheckBox);
         Controls.Add(closeButton);
         Controls.Add(_slider);
     }
@@ -128,6 +153,24 @@ internal sealed class StrengthSliderForm : Form
         finally
         {
             _isSynchronizingEnabled = false;
+        }
+    }
+
+    public void SetPrivacyMode(bool enabled)
+    {
+        if (_privacyModeCheckBox.Checked == enabled)
+        {
+            return;
+        }
+
+        _isSynchronizingPrivacyMode = true;
+        try
+        {
+            _privacyModeCheckBox.Checked = enabled;
+        }
+        finally
+        {
+            _isSynchronizingPrivacyMode = false;
         }
     }
 

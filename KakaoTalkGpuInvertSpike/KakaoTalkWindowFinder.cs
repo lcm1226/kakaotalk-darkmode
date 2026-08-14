@@ -31,7 +31,7 @@ internal static class KakaoTalkWindowFinder
             return null;
         }
 
-        var candidates = new List<(TargetWindow Window, bool Strong)>();
+        var candidates = new List<TargetWindow>();
         _ = NativeMethods.EnumWindows((hwnd, lParam) =>
         {
             if (!NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd))
@@ -52,22 +52,23 @@ internal static class KakaoTalkWindowFinder
 
             var title = new StringBuilder(256);
             _ = NativeMethods.GetWindowText(hwnd, title, title.Capacity);
-            var titleText = title.ToString().Trim();
-            var strong = string.Equals(titleText, "KakaoTalk", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(titleText, "\uCE74\uCE74\uC624\uD1A1", StringComparison.OrdinalIgnoreCase);
-            candidates.Add((new TargetWindow(
+            if (!IsMainWindowTitle(title.ToString()))
+            {
+                return true;
+            }
+
+            candidates.Add(new TargetWindow(
                 hwnd,
                 bounds.Left,
                 bounds.Top,
                 bounds.Width,
-                bounds.Height), strong));
+                bounds.Height));
             return true;
         }, nint.Zero);
 
         return candidates
-            .OrderByDescending(candidate => candidate.Strong)
-            .ThenByDescending(candidate => candidate.Window.Width * candidate.Window.Height)
-            .Select(candidate => (TargetWindow?)candidate.Window)
+            .OrderByDescending(candidate => candidate.Width * candidate.Height)
+            .Select(candidate => (TargetWindow?)candidate)
             .FirstOrDefault();
     }
 
@@ -76,12 +77,27 @@ internal static class KakaoTalkWindowFinder
         target = default;
         if (hwnd == nint.Zero || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd) ||
             !NativeMethods.TryGetVisibleBounds(hwnd, out var bounds) ||
-            bounds.Width < MinimumWidth || bounds.Height < MinimumHeight)
+            bounds.Width < MinimumWidth || bounds.Height < MinimumHeight ||
+            !HasMainWindowTitle(hwnd))
         {
             return false;
         }
 
         target = new TargetWindow(hwnd, bounds.Left, bounds.Top, bounds.Width, bounds.Height);
         return true;
+    }
+
+    private static bool HasMainWindowTitle(nint hwnd)
+    {
+        var title = new StringBuilder(256);
+        _ = NativeMethods.GetWindowText(hwnd, title, title.Capacity);
+        return IsMainWindowTitle(title.ToString());
+    }
+
+    private static bool IsMainWindowTitle(string title)
+    {
+        var trimmedTitle = title.Trim();
+        return string.Equals(trimmedTitle, "KakaoTalk", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(trimmedTitle, "\uCE74\uCE74\uC624\uD1A1", StringComparison.OrdinalIgnoreCase);
     }
 }

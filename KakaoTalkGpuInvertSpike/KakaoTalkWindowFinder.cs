@@ -12,9 +12,20 @@ internal static class KakaoTalkWindowFinder
 
     public static TargetWindow? FindMainWindow()
     {
-        var processIds = Process.GetProcessesByName("KakaoTalk")
-            .Select(process => (uint)process.Id)
-            .ToHashSet();
+        var processes = Process.GetProcessesByName("KakaoTalk");
+        HashSet<uint> processIds;
+        try
+        {
+            processIds = processes.Select(process => (uint)process.Id).ToHashSet();
+        }
+        finally
+        {
+            foreach (var process in processes)
+            {
+                process.Dispose();
+            }
+        }
+
         if (processIds.Count == 0)
         {
             return null;

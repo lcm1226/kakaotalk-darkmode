@@ -30,7 +30,9 @@ internal sealed class OverlayWindow : IDisposable
         }
     }
 
-    public bool IsVisible => _hwnd != nint.Zero && NativeMethods.IsWindowVisible(_hwnd);
+    public bool IsVisible => _hwnd != nint.Zero &&
+        NativeMethods.IsWindow(_hwnd) &&
+        NativeMethods.IsWindowVisible(_hwnd);
 
     public void Position(TargetWindow target, bool show)
     {
@@ -73,7 +75,9 @@ internal sealed class OverlayWindow : IDisposable
 
     public void Hide()
     {
-        if (_hwnd != nint.Zero && (_visible || NativeMethods.IsWindowVisible(_hwnd)))
+        if (_hwnd != nint.Zero &&
+            NativeMethods.IsWindow(_hwnd) &&
+            (_visible || NativeMethods.IsWindowVisible(_hwnd)))
         {
             _ = NativeMethods.ShowWindow(_hwnd, NativeMethods.SwHide);
             _visible = false;
@@ -95,16 +99,35 @@ internal sealed class OverlayWindow : IDisposable
                 Windows.Remove(_hwnd);
             }
 
-            _ = NativeMethods.DestroyWindow(_hwnd);
+            if (NativeMethods.IsWindow(_hwnd))
+            {
+                _ = NativeMethods.DestroyWindow(_hwnd);
+            }
+
             _hwnd = nint.Zero;
+            _owner = nint.Zero;
+            _visible = false;
         }
     }
 
     private void EnsureCreated()
     {
-        if (_hwnd != nint.Zero)
+        if (_hwnd != nint.Zero && NativeMethods.IsWindow(_hwnd))
         {
             return;
+        }
+
+        if (_hwnd != nint.Zero)
+        {
+            lock (WindowSync)
+            {
+                Windows.Remove(_hwnd);
+            }
+
+            _hwnd = nint.Zero;
+            _owner = nint.Zero;
+            _visible = false;
+            _privacyHotKeyRegistered = false;
         }
 
         EnsureClassRegistered();

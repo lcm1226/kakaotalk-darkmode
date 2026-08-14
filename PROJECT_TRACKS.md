@@ -31,6 +31,14 @@ hides the overlay without rebuilding the WGC session, so re-enabling is
 immediate. Settings are stored on graceful exit in
 `%LOCALAPPDATA%\KakaoTalkGpuInvertSpike\settings.json`.
 
+KakaoTalk location events are marshalled to the WinForms UI thread and
+coalesced into 50 ms refreshes. This keeps repeated Win32/AHK window-position
+updates from concurrently touching the WGC and D3D11 pipeline. Transient WGC
+startup or frame errors use bounded exponential retry instead of disabling the
+effect or retrying continuously. Runtime status is written to `spike.log`, and
+process lifecycle or unhandled exceptions are written to `crash.log` in the
+same local settings directory. Both logs rotate at 1 MB.
+
 For one-shot visual diagnostics only, set `KAKAOTALK_GPU_CAPTURE_PATH` to a PNG
 path before launch. The renderer then reads back and saves its first processed
 backbuffer. Normal launches never create a staging texture or perform this

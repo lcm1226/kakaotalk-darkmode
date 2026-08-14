@@ -15,6 +15,7 @@ internal static class Program
             return;
         }
 
+        AppDiagnostics.Initialize();
         _ = NativeMethods.SetProcessDpiAwarenessContext(new nint(-4));
         ApplicationConfiguration.Initialize();
         try
@@ -32,8 +33,13 @@ internal static class Program
             using var application = new GpuInvertApplication();
             Application.Run(application);
         }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Fatal main-loop exception", exception);
+        }
         finally
         {
+            AppDiagnostics.WriteLifecycle("Process stopped");
             instanceMutex.ReleaseMutex();
         }
     }
@@ -128,13 +134,13 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private const int SafetyRefreshIntervalMs = 5000;
     private const int StartupRefreshIntervalMs = 100;
     private const int WaitingRefreshIntervalMs = 1000;
-    private static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "KakaoTalkGpuInvertSpike",
-        "spike.log");
+    private const int WindowEventDebounceIntervalMs = 50;
+    private const int PipelineRetryBaseIntervalMs = 2000;
+    private const int PipelineRetryMaximumIntervalMs = 30000;
     private readonly Icon _applicationIcon;
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _timer;
+    private readonly System.Windows.Forms.Timer _windowEventTimer;
     private readonly OverlayWindow _overlay = new();
     private readonly WindowEventMonitor _windowEventMonitor;
     private readonly StrengthSliderForm _strengthSlider;
@@ -151,6 +157,11 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private bool _privacyModeEnabled;
     private bool _showStrengthControl;
     private int _invertStrength = 100;
+    private int _windowRefreshQueued;
+    private int _pipelineFailureCount;
+    private nint _failedTargetHandle;
+    private DateTimeOffset _nextPipelineRetryAt;
+    private string? _pipelineFailureStatus;
     private string? _lastLoggedState;
     private string? _lastDisplayedStatus;
     private DateTimeOffset _lastLogAt;
@@ -163,6 +174,15 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _invertStrength = Math.Clamp(settings.InvertStrength, 0, 100);
         _showStrengthControl = settings.ShowStrengthControl;
         _uiDispatcher.CreateControl();
+        _windowEventTimer = new System.Windows.Forms.Timer
+        {
+            Interval = WindowEventDebounceIntervalMs
+        };
+        _windowEventTimer.Tick += (_, _) =>
+        {
+            _windowEventTimer.Stop();
+            Refresh();
+        };
         _strengthSlider = new StrengthSliderForm(
             _invertStrength,
             _enabled,
@@ -171,7 +191,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
             () => SetStrengthControlVisible(false));
         _overlay.PrivacyHotKeyPressed += TogglePrivacyMode;
         _ = _overlay.Handle;
-        _windowEventMonitor = new WindowEventMonitor(Refresh);
+        _windowEventMonitor = new WindowEventMonitor(QueueWindowRefresh);
         _applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ??
             (Icon)SystemIcons.Application.Clone();
         _trayIcon = new NotifyIcon
@@ -193,6 +213,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
         {
             _timer.Stop();
             _timer.Dispose();
+            _windowEventTimer.Stop();
+            _windowEventTimer.Dispose();
             _windowEventMonitor.Dispose();
             GpuInvertSettings.Save(new GpuInvertSettings
             {
@@ -296,16 +318,49 @@ internal sealed class GpuInvertApplication : ApplicationContext
             return;
         }
 
-        if (_targetHandle != target.Value.Handle || _capture is null || _renderer is null)
+        if (_failedTargetHandle != nint.Zero && _failedTargetHandle != target.Value.Handle)
         {
-            StartPipeline(target.Value);
+            ResetPipelineRetry();
         }
 
         NativeMethods.GetWindowThreadProcessId(target.Value.Handle, out var targetProcessId);
         _windowEventMonitor.Attach(targetProcessId, target.Value.Handle);
 
+        if (_targetHandle != target.Value.Handle || _capture is null || _renderer is null)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_failedTargetHandle == target.Value.Handle && now < _nextPipelineRetryAt)
+            {
+                _overlay.Hide();
+                if (_showStrengthControl)
+                {
+                    _strengthSlider.ShowNear(target.Value);
+                }
+                else
+                {
+                    _strengthSlider.Hide();
+                }
+
+                _timer.Interval = WaitingRefreshIntervalMs;
+                var retrySeconds = Math.Max(
+                    1,
+                    (int)Math.Ceiling((_nextPipelineRetryAt - now).TotalSeconds));
+                SetStatus(
+                    $"GPU pipeline retry pending | {retrySeconds}s | {_pipelineFailureStatus}");
+                return;
+            }
+
+            StartPipeline(target.Value);
+        }
+
         if (_capture is null || _renderer is null)
         {
+            return;
+        }
+
+        if (_capture.IsFaulted)
+        {
+            SchedulePipelineRetry(target.Value, _capture.Status);
             return;
         }
 
@@ -339,7 +394,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
         }
         catch (Exception exception)
         {
-            StopAfterPipelineFailure(
+            SchedulePipelineRetry(
                 target.Value,
                 $"Pipeline error: {exception.GetType().Name}");
         }
@@ -364,27 +419,33 @@ internal sealed class GpuInvertApplication : ApplicationContext
                 _renderer,
                 () => QueueFirstFrameDisplay(target.Handle));
             _capture.Start(target.Handle);
+            ResetPipelineRetry();
             SetStatus("Waiting for first GPU frame");
         }
         catch (Exception exception)
         {
-            StopAfterPipelineFailure(
+            SchedulePipelineRetry(
                 target,
                 $"Start error: {exception.GetType().Name}: {exception.Message}");
         }
     }
 
-    private void StopAfterPipelineFailure(TargetWindow target, string status)
+    private void SchedulePipelineRetry(TargetWindow target, string status)
     {
         SetStatus(status);
         DisposePipeline();
         _overlay.Hide();
-        _enabled = false;
-        _strengthSlider.SetEnabled(false);
-        if (_enabledMenuItem is not null && _enabledMenuItem.Checked)
-        {
-            _enabledMenuItem.Checked = false;
-        }
+        _pipelineFailureCount = _failedTargetHandle == target.Handle
+            ? _pipelineFailureCount + 1
+            : 1;
+        _failedTargetHandle = target.Handle;
+        _pipelineFailureStatus = status;
+        var retryMultiplier = 1 << Math.Min(_pipelineFailureCount - 1, 4);
+        var retryMilliseconds = Math.Min(
+            PipelineRetryMaximumIntervalMs,
+            PipelineRetryBaseIntervalMs * retryMultiplier);
+        _nextPipelineRetryAt = DateTimeOffset.UtcNow.AddMilliseconds(retryMilliseconds);
+        _timer.Interval = WaitingRefreshIntervalMs;
 
         if (_showStrengthControl)
         {
@@ -394,6 +455,14 @@ internal sealed class GpuInvertApplication : ApplicationContext
         {
             _strengthSlider.Hide();
         }
+    }
+
+    private void ResetPipelineRetry()
+    {
+        _pipelineFailureCount = 0;
+        _failedTargetHandle = nint.Zero;
+        _nextPipelineRetryAt = default;
+        _pipelineFailureStatus = null;
     }
 
     private void DisposePipeline()
@@ -447,6 +516,40 @@ internal sealed class GpuInvertApplication : ApplicationContext
         ApplyRenderSettings();
     }
 
+    private void QueueWindowRefresh()
+    {
+        if (Interlocked.Exchange(ref _windowRefreshQueued, 1) != 0)
+        {
+            return;
+        }
+
+        if (_uiDispatcher.IsDisposed || !_uiDispatcher.IsHandleCreated)
+        {
+            Interlocked.Exchange(ref _windowRefreshQueued, 0);
+            return;
+        }
+
+        try
+        {
+            _uiDispatcher.BeginInvoke((Action)(() =>
+            {
+                Interlocked.Exchange(ref _windowRefreshQueued, 0);
+                if (!_windowEventTimer.Enabled)
+                {
+                    _windowEventTimer.Start();
+                }
+            }));
+        }
+        catch (ObjectDisposedException)
+        {
+            Interlocked.Exchange(ref _windowRefreshQueued, 0);
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref _windowRefreshQueued, 0);
+        }
+    }
+
     private void SetEnabled(bool enabled)
     {
         if (_enabled == enabled)
@@ -456,6 +559,11 @@ internal sealed class GpuInvertApplication : ApplicationContext
         }
 
         _enabled = enabled;
+        if (enabled)
+        {
+            ResetPipelineRetry();
+        }
+
         if (_enabledMenuItem is not null && _enabledMenuItem.Checked != enabled)
         {
             _enabledMenuItem.Checked = enabled;
@@ -536,21 +644,13 @@ internal sealed class GpuInvertApplication : ApplicationContext
         var state = (separatorIndex >= 0 ? status[..separatorIndex] : status).Trim();
         var now = DateTimeOffset.Now;
         if (string.Equals(state, _lastLoggedState, StringComparison.Ordinal) &&
-            now - _lastLogAt < TimeSpan.FromSeconds(5))
+            now - _lastLogAt < TimeSpan.FromMinutes(1))
         {
             return;
         }
 
         _lastLoggedState = state;
         _lastLogAt = now;
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
-            File.AppendAllText(LogPath, $"{now:O} {status}{Environment.NewLine}");
-        }
-        catch
-        {
-            // Diagnostics must never affect the rendering path.
-        }
+        AppDiagnostics.WriteStatus(status);
     }
 }

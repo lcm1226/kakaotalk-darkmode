@@ -83,6 +83,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindow(nint hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool IsIconic(nint hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]

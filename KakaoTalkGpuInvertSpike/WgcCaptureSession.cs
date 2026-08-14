@@ -44,6 +44,7 @@ internal sealed class WgcCaptureSession : IDisposable
     private double _framesPerSecond;
     private string _status = "Idle";
     private bool _hasPresentedFrame;
+    private bool _isFaulted;
     private volatile bool _renderingEnabled = true;
     private bool _disposed;
 
@@ -74,6 +75,11 @@ internal sealed class WgcCaptureSession : IDisposable
         get { lock (_sync) { return _totalFrames; } }
     }
 
+    public bool IsFaulted
+    {
+        get { lock (_sync) { return _isFaulted; } }
+    }
+
     public void Start(nint targetHandle)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -97,6 +103,11 @@ internal sealed class WgcCaptureSession : IDisposable
         _session.IsCursorCaptureEnabled = false;
         TryDisableCaptureBorder(_session);
         _session.StartCapture();
+        lock (_sync)
+        {
+            _isFaulted = false;
+        }
+
         SetStatus("Waiting for GPU frame");
     }
 
@@ -169,7 +180,11 @@ internal sealed class WgcCaptureSession : IDisposable
         }
         catch (Exception exception)
         {
-            SetStatus($"Frame error: {exception.GetType().Name}: {exception.Message}");
+            lock (_sync)
+            {
+                _isFaulted = true;
+                _status = $"Frame error: {exception.GetType().Name}: {exception.Message}";
+            }
         }
     }
 
@@ -223,6 +238,7 @@ internal sealed class WgcCaptureSession : IDisposable
         {
             isFirstFrame = !_hasPresentedFrame;
             _hasPresentedFrame = true;
+            _isFaulted = false;
             _totalFrames++;
             _framesInWindow++;
             var elapsed = _frameClock.Elapsed.TotalSeconds;

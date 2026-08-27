@@ -3,10 +3,8 @@ namespace KakaoTalkGpuInvertSpike;
 internal sealed class PrivacyMaskOverlay : IDisposable
 {
     private const float SidebarVisibleWidth = 78;
-    private const float TitleButtonsVisibleWidth = 138;
     private const float TitleButtonsVisibleHeight = 38;
-    private readonly PrivacyMaskForm _titleMask = new();
-    private readonly PrivacyMaskForm _bodyMask = new();
+    private readonly PrivacyMaskForm _contentMask = new();
 
     public void Position(TargetWindow target, float dpiScale, bool show)
     {
@@ -21,23 +19,12 @@ internal sealed class PrivacyMaskOverlay : IDisposable
             (int)Math.Round(SidebarVisibleWidth * dpiScale),
             0,
             target.Width);
-        var titleButtonsWidth = Math.Clamp(
-            (int)Math.Round(TitleButtonsVisibleWidth * dpiScale),
-            0,
-            Math.Max(0, target.Width - sidebarWidth));
         var titleHeight = Math.Clamp(
             (int)Math.Round(TitleButtonsVisibleHeight * dpiScale),
             0,
             target.Height);
 
-        _titleMask.Position(
-            target.Handle,
-            new Rectangle(
-                target.X + sidebarWidth,
-                target.Y,
-                Math.Max(0, target.Width - sidebarWidth - titleButtonsWidth),
-                titleHeight));
-        _bodyMask.Position(
+        _contentMask.Position(
             target.Handle,
             new Rectangle(
                 target.X + sidebarWidth,
@@ -48,14 +35,12 @@ internal sealed class PrivacyMaskOverlay : IDisposable
 
     public void Hide()
     {
-        _titleMask.Hide();
-        _bodyMask.Hide();
+        _contentMask.Hide();
     }
 
     public void Dispose()
     {
-        _titleMask.Dispose();
-        _bodyMask.Dispose();
+        _contentMask.Dispose();
     }
 
     private sealed class PrivacyMaskForm : Form

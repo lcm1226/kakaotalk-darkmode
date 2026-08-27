@@ -25,20 +25,28 @@ after visual correctness, input pass-through, frame pacing, CPU, GPU, and
 memory usage are measured on the real KakaoTalk window.
 
 The current tray controls include Enabled, Full privacy (`Ctrl+H`), Auto
-privacy, and Focus Reveal (`Ctrl+Shift+H`). The 281x40 compact control exposes
+privacy, Focus Reveal (`Ctrl+Shift+H`), and strength-control display (`Ctrl+B`).
+The three hotkeys are registered only while a KakaoTalk process window or the
+compact control has foreground focus, so they remain available to unrelated apps. A
+left-button double-click on the tray icon also displays the compact control.
+The 281x40 compact control exposes
 synchronized GPU invert, Privacy, and Auto checkboxes, a Focus Reveal eye
 button, a 0-100% slider, and a close button. Focus Reveal temporarily removes
 Full privacy for eight seconds and then locks the content again. Auto privacy
 masks content whenever KakaoTalk loses foreground focus. Disabling GPU invert
 pauses GPU rendering and hides the capture overlay without disabling privacy.
+Close requests hide the compact control instead of disposing it, and the
+application recreates the control if an external window message disposes it.
 Settings are stored on graceful exit in
 `%LOCALAPPDATA%\KakaoTalkGpuInvertSpike\settings.json`.
 
 When a GPU frame is visible, privacy remains a branch in the existing shader.
-When GPU invert is disabled or its pipeline is recovering, two solid native
-mask windows cover the same title and body regions without WGC or pixel
-processing. These fallback windows are disabled, transparent to hit testing,
-and verified with `WindowFromPoint` before they remain visible.
+The full title-bar strip and left sidebar stay visible while the conversation
+content below the title bar is masked. When GPU invert is disabled or its
+pipeline is recovering, one solid native mask window covers the same content
+region without WGC or pixel processing. This fallback window is disabled,
+transparent to hit testing, and verified with `WindowFromPoint` before it
+remains visible.
 
 Window discovery accepts only a visible KakaoTalk process window whose title is
 exactly `KakaoTalk` or the Korean localized KakaoTalk title. It never falls back

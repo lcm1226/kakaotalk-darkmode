@@ -177,7 +177,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private readonly OverlayWindow _overlay = new();
     private readonly PrivacyMaskOverlay _privacyMask = new();
     private readonly WindowEventMonitor _windowEventMonitor;
-    private readonly StrengthSliderForm _strengthSlider;
+    private StrengthSliderForm _strengthSlider;
     private readonly Control _uiDispatcher = new();
     private ToolStripMenuItem? _enabledMenuItem;
     private ToolStripMenuItem? _privacyModeMenuItem;
@@ -197,6 +197,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private bool _showStrengthControl;
     private int _invertStrength = 100;
     private int _windowRefreshQueued;
+    private int _foregroundRefreshQueued;
     private int _pipelineFailureCount;
     private nint _failedTargetHandle;
     private DateTimeOffset _nextPipelineRetryAt;
@@ -228,20 +229,13 @@ internal sealed class GpuInvertApplication : ApplicationContext
         };
         _peekTimer = new System.Windows.Forms.Timer { Interval = PeekDurationMs };
         _peekTimer.Tick += (_, _) => EndPeek(true);
-        _strengthSlider = new StrengthSliderForm(
-            _invertStrength,
-            _enabled,
-            _privacyModeEnabled,
-            _autoPrivacyEnabled,
-            SetInvertStrength,
-            SetEnabled,
-            SetPrivacyMode,
-            SetAutoPrivacy,
-            TogglePeekFromControl,
-            () => SetStrengthControlVisible(false));
+        _strengthSlider = CreateStrengthSlider();
         _overlay.PrivacyHotKeyPressed += TogglePrivacyMode;
         _overlay.PeekHotKeyPressed += TogglePeek;
-        _windowEventMonitor = new WindowEventMonitor(QueueWindowRefresh);
+        _overlay.StrengthControlHotKeyPressed += ShowStrengthControlFromHotKey;
+        _windowEventMonitor = new WindowEventMonitor(
+            QueueWindowRefresh,
+            QueueForegroundRefresh);
         _applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ??
             (Icon)SystemIcons.Application.Clone();
         _trayIcon = new NotifyIcon
@@ -250,6 +244,13 @@ internal sealed class GpuInvertApplication : ApplicationContext
             Icon = _applicationIcon,
             Visible = true,
             ContextMenuStrip = BuildMenu()
+        };
+        _trayIcon.MouseDoubleClick += (_, args) =>
+        {
+            if (args.Button == MouseButtons.Left)
+            {
+                SetStrengthControlVisible(true);
+            }
         };
         _timer = new System.Windows.Forms.Timer { Interval = StartupRefreshIntervalMs };
         _timer.Tick += (_, _) => Refresh();
@@ -293,6 +294,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _uiDispatcher.Dispose();
             _overlay.PrivacyHotKeyPressed -= TogglePrivacyMode;
             _overlay.PeekHotKeyPressed -= TogglePeek;
+            _overlay.StrengthControlHotKeyPressed -= ShowStrengthControlFromHotKey;
+            _overlay.SetHotKeysEnabled(false);
             _overlay.Dispose();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
@@ -387,7 +390,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _strengthMenuItem = new ToolStripMenuItem($"Invert strength: {_invertStrength}%");
         _strengthMenuItem.Click += (_, _) => SetStrengthControlVisible(true);
         menu.Items.Add(_strengthMenuItem);
-        _showStrengthControlMenuItem = new ToolStripMenuItem("Show strength control")
+        _showStrengthControlMenuItem = new ToolStripMenuItem("Show strength control (Ctrl+B)")
         {
             Checked = _showStrengthControl,
             CheckOnClick = true
@@ -419,6 +422,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
             AppDiagnostics.WriteException("Refresh recovery", exception);
             _windowEventMonitor.Detach();
             DisposePipeline();
+            _overlay.SetHotKeysEnabled(false);
             _overlay.Hide();
             _privacyMask.Hide();
             _strengthSlider.Hide();
@@ -433,6 +437,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void RefreshCore()
     {
+        EnsureStrengthSlider();
         var target = _targetHandle != nint.Zero &&
             KakaoTalkWindowFinder.TryGetWindowSnapshot(_targetHandle, out var cachedTarget)
                 ? cachedTarget
@@ -446,6 +451,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
             _windowEventMonitor.Detach();
             DisposePipeline();
+            _overlay.SetHotKeysEnabled(false);
             _overlay.Hide();
             _privacyMask.Hide();
             _strengthSlider.Hide();
@@ -461,6 +467,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
         NativeMethods.GetWindowThreadProcessId(target.Value.Handle, out var targetProcessId);
         _windowEventMonitor.Attach(targetProcessId, target.Value.Handle);
+        _overlay.SetHotKeysEnabled(IsHotKeyContextActive(targetProcessId));
         var targetFocused = IsTargetForeground(target.Value.Handle);
         if (_peekActive && !IsPeekContextValid(targetFocused))
         {
@@ -699,7 +706,22 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void TogglePrivacyMode()
     {
+        if (!IsHotKeyContextActive())
+        {
+            return;
+        }
+
         SetPrivacyMode(!_privacyModeEnabled);
+    }
+
+    private void ShowStrengthControlFromHotKey()
+    {
+        if (!IsHotKeyContextActive())
+        {
+            return;
+        }
+
+        SetStrengthControlVisible(true);
     }
 
     private void TogglePeek()
@@ -771,6 +793,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void UpdatePeekUi()
     {
+        EnsureStrengthSlider();
         _strengthSlider.SetPeekActive(_peekActive);
         if (_peekMenuItem is not null)
         {
@@ -824,8 +847,43 @@ internal sealed class GpuInvertApplication : ApplicationContext
         }
     }
 
+    private void QueueForegroundRefresh()
+    {
+        if (_shuttingDown || Interlocked.Exchange(ref _foregroundRefreshQueued, 1) != 0)
+        {
+            return;
+        }
+
+        if (_uiDispatcher.IsDisposed || !_uiDispatcher.IsHandleCreated)
+        {
+            Interlocked.Exchange(ref _foregroundRefreshQueued, 0);
+            return;
+        }
+
+        try
+        {
+            _uiDispatcher.BeginInvoke((Action)(() =>
+            {
+                Interlocked.Exchange(ref _foregroundRefreshQueued, 0);
+                if (!_shuttingDown)
+                {
+                    Refresh();
+                }
+            }));
+        }
+        catch (ObjectDisposedException)
+        {
+            Interlocked.Exchange(ref _foregroundRefreshQueued, 0);
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref _foregroundRefreshQueued, 0);
+        }
+    }
+
     private void SetEnabled(bool enabled)
     {
+        EnsureStrengthSlider();
         if (_enabled == enabled)
         {
             _strengthSlider.SetEnabled(enabled);
@@ -849,6 +907,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void SetStrengthControlVisible(bool visible)
     {
+        EnsureStrengthSlider();
         if (_showStrengthControl == visible)
         {
             if (visible)
@@ -889,6 +948,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void SetPrivacyMode(bool enabled)
     {
+        EnsureStrengthSlider();
         var changed = _privacyModeEnabled != enabled;
         _privacyModeEnabled = enabled;
         if (!enabled)
@@ -910,6 +970,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void SetAutoPrivacy(bool enabled)
     {
+        EnsureStrengthSlider();
         var changed = _autoPrivacyEnabled != enabled;
         _autoPrivacyEnabled = enabled;
         if (_autoPrivacyMenuItem is not null && _autoPrivacyMenuItem.Checked != enabled)
@@ -978,9 +1039,69 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
         var foreground = NativeMethods.GetForegroundWindow();
         return foreground == targetHandle ||
-            (_strengthSlider.IsHandleCreated && foreground == _strengthSlider.Handle) ||
-            (foreground != nint.Zero &&
-                NativeMethods.GetAncestor(foreground, NativeMethods.GaRootOwner) == targetHandle);
+            (!_strengthSlider.IsDisposed &&
+                _strengthSlider.IsHandleCreated &&
+                foreground == _strengthSlider.Handle);
+    }
+
+    private bool IsHotKeyContextActive()
+    {
+        var target = _targetHandle != nint.Zero &&
+            KakaoTalkWindowFinder.TryGetWindowSnapshot(_targetHandle, out var cachedTarget)
+                ? cachedTarget
+                : KakaoTalkWindowFinder.FindMainWindow();
+        if (target is null)
+        {
+            return false;
+        }
+
+        NativeMethods.GetWindowThreadProcessId(target.Value.Handle, out var targetProcessId);
+        return IsHotKeyContextActive(targetProcessId);
+    }
+
+    private bool IsHotKeyContextActive(uint targetProcessId)
+    {
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (!_strengthSlider.IsDisposed &&
+            _strengthSlider.IsHandleCreated &&
+            foreground == _strengthSlider.Handle)
+        {
+            return true;
+        }
+
+        if (foreground == nint.Zero || targetProcessId == 0)
+        {
+            return false;
+        }
+
+        NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundProcessId);
+        return foregroundProcessId == targetProcessId;
+    }
+
+    private StrengthSliderForm CreateStrengthSlider()
+    {
+        return new StrengthSliderForm(
+            _invertStrength,
+            _enabled,
+            _privacyModeEnabled,
+            _autoPrivacyEnabled,
+            SetInvertStrength,
+            SetEnabled,
+            SetPrivacyMode,
+            SetAutoPrivacy,
+            TogglePeekFromControl,
+            () => SetStrengthControlVisible(false));
+    }
+
+    private void EnsureStrengthSlider()
+    {
+        if (!_strengthSlider.IsDisposed)
+        {
+            return;
+        }
+
+        AppDiagnostics.WriteStatus("Recreating disposed strength control");
+        _strengthSlider = CreateStrengthSlider();
     }
 
     private static float GetDpiScale(nint hwnd)

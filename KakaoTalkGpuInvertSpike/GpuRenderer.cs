@@ -14,7 +14,6 @@ namespace KakaoTalkGpuInvertSpike;
 internal sealed class GpuRenderer : IDisposable
 {
     private const float SidebarVisibleWidth = 78;
-    private const float TitleButtonsVisibleWidth = 138;
     private const float TitleButtonsVisibleHeight = 38;
     private static readonly Guid DxgiDeviceIid = new("54EC77FA-1377-44E6-8C32-88FD5F44C84C");
     private readonly object _sync = new();
@@ -356,7 +355,7 @@ internal sealed class GpuRenderer : IDisposable
                 float InvertStrength;
                 float PrivacyModeEnabled;
                 float SidebarWidth;
-                float TitleButtonsWidth;
+                float Reserved;
                 float TitleButtonsHeight;
                 float OutputWidth;
                 float OutputHeight;
@@ -398,10 +397,7 @@ internal sealed class GpuRenderer : IDisposable
                 {
                     bool coversBody = input.Position.x >= SidebarWidth &&
                         input.Position.y >= TitleButtonsHeight;
-                    bool coversTitle = input.Position.x >= SidebarWidth &&
-                        input.Position.x < OutputWidth - TitleButtonsWidth &&
-                        input.Position.y < TitleButtonsHeight;
-                    if (coversBody || coversTitle)
+                    if (coversBody)
                     {
                         color = 0.0;
                     }
@@ -519,7 +515,7 @@ internal sealed class GpuRenderer : IDisposable
                 InvertStrength = _invertStrength,
                 PrivacyModeEnabled = _privacyModeEnabled ? 1 : 0,
                 SidebarWidth = SidebarVisibleWidth * _dpiScale,
-                TitleButtonsWidth = TitleButtonsVisibleWidth * _dpiScale,
+                Reserved = 0,
                 TitleButtonsHeight = TitleButtonsVisibleHeight * _dpiScale,
                 OutputWidth = _outputWidth,
                 OutputHeight = _outputHeight,
@@ -625,7 +621,7 @@ internal sealed class GpuRenderer : IDisposable
         public float InvertStrength;
         public float PrivacyModeEnabled;
         public float SidebarWidth;
-        public float TitleButtonsWidth;
+        public float Reserved;
         public float TitleButtonsHeight;
         public float OutputWidth;
         public float OutputHeight;

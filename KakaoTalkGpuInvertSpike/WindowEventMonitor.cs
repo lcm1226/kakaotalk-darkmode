@@ -14,15 +14,17 @@ internal sealed class WindowEventMonitor : IDisposable
     private const uint WinEventOutOfContext = 0;
 
     private readonly Action _windowChanged;
+    private readonly Action _foregroundChanged;
     private readonly NativeMethods.WinEventProc _eventProc;
     private readonly List<nint> _hooks = [];
     private uint _processId;
     private nint _targetHandle;
     private volatile bool _disposed;
 
-    public WindowEventMonitor(Action windowChanged)
+    public WindowEventMonitor(Action windowChanged, Action foregroundChanged)
     {
         _windowChanged = windowChanged;
+        _foregroundChanged = foregroundChanged;
         _eventProc = OnWinEvent;
     }
 
@@ -104,7 +106,7 @@ internal sealed class WindowEventMonitor : IDisposable
 
         if (eventType == EventSystemForeground)
         {
-            NotifyWindowChanged();
+            Notify(_foregroundChanged);
             return;
         }
 
@@ -118,14 +120,14 @@ internal sealed class WindowEventMonitor : IDisposable
             return;
         }
 
-        NotifyWindowChanged();
+        Notify(_windowChanged);
     }
 
-    private void NotifyWindowChanged()
+    private static void Notify(Action callback)
     {
         try
         {
-            _windowChanged();
+            callback();
         }
         catch
         {

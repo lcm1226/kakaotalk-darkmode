@@ -326,7 +326,7 @@ internal sealed class StrengthSliderForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (e.CloseReason == CloseReason.UserClosing)
+        if (!Disposing && !IsDisposed)
         {
             e.Cancel = true;
             HideAndNotify();

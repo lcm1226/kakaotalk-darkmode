@@ -8,7 +8,9 @@ internal sealed class OverlayWindow : IDisposable
     private const string WindowClassName = "KakaoTalkGpuInvertSpike.Overlay";
     private const int PrivacyHotKeyId = 0x4B47;
     private const int PeekHotKeyId = 0x4B48;
+    private const int StrengthControlHotKeyId = 0x4B49;
     private const uint VirtualKeyH = 0x48;
+    private const uint VirtualKeyB = 0x42;
     private static readonly NativeMethods.WndProc WindowProc = WndProc;
     private static readonly object ClassSync = new();
     private static readonly object WindowSync = new();
@@ -20,12 +22,15 @@ internal sealed class OverlayWindow : IDisposable
     private bool _visible;
     private bool _privacyHotKeyRegistered;
     private bool _peekHotKeyRegistered;
+    private bool _strengthControlHotKeyRegistered;
     private TargetWindow? _lastTarget;
     private bool _inputPassThroughVerified;
 
     public event Action? PrivacyHotKeyPressed;
 
     public event Action? PeekHotKeyPressed;
+
+    public event Action? StrengthControlHotKeyPressed;
 
     public nint Handle
     {
@@ -109,21 +114,48 @@ internal sealed class OverlayWindow : IDisposable
         }
     }
 
+    public void SetHotKeysEnabled(bool enabled)
+    {
+        if (!enabled)
+        {
+            UnregisterHotKeys();
+            return;
+        }
+
+        EnsureCreated();
+        if (!_privacyHotKeyRegistered)
+        {
+            _privacyHotKeyRegistered = NativeMethods.RegisterHotKey(
+                _hwnd,
+                PrivacyHotKeyId,
+                NativeMethods.ModControl | NativeMethods.ModNoRepeat,
+                VirtualKeyH);
+        }
+
+        if (!_peekHotKeyRegistered)
+        {
+            _peekHotKeyRegistered = NativeMethods.RegisterHotKey(
+                _hwnd,
+                PeekHotKeyId,
+                NativeMethods.ModControl | NativeMethods.ModShift | NativeMethods.ModNoRepeat,
+                VirtualKeyH);
+        }
+
+        if (!_strengthControlHotKeyRegistered)
+        {
+            _strengthControlHotKeyRegistered = NativeMethods.RegisterHotKey(
+                _hwnd,
+                StrengthControlHotKeyId,
+                NativeMethods.ModControl | NativeMethods.ModNoRepeat,
+                VirtualKeyB);
+        }
+    }
+
     public void Dispose()
     {
         if (_hwnd != nint.Zero)
         {
-            if (_privacyHotKeyRegistered)
-            {
-                _ = NativeMethods.UnregisterHotKey(_hwnd, PrivacyHotKeyId);
-                _privacyHotKeyRegistered = false;
-            }
-
-            if (_peekHotKeyRegistered)
-            {
-                _ = NativeMethods.UnregisterHotKey(_hwnd, PeekHotKeyId);
-                _peekHotKeyRegistered = false;
-            }
+            UnregisterHotKeys();
 
             lock (WindowSync)
             {
@@ -162,6 +194,7 @@ internal sealed class OverlayWindow : IDisposable
             _visible = false;
             _privacyHotKeyRegistered = false;
             _peekHotKeyRegistered = false;
+            _strengthControlHotKeyRegistered = false;
             _lastTarget = null;
             _inputPassThroughVerified = false;
         }
@@ -213,16 +246,35 @@ internal sealed class OverlayWindow : IDisposable
             Windows[_hwnd] = this;
         }
 
-        _privacyHotKeyRegistered = NativeMethods.RegisterHotKey(
-            _hwnd,
-            PrivacyHotKeyId,
-            NativeMethods.ModControl | NativeMethods.ModNoRepeat,
-            VirtualKeyH);
-        _peekHotKeyRegistered = NativeMethods.RegisterHotKey(
-            _hwnd,
-            PeekHotKeyId,
-            NativeMethods.ModControl | NativeMethods.ModShift | NativeMethods.ModNoRepeat,
-            VirtualKeyH);
+    }
+
+    private void UnregisterHotKeys()
+    {
+        if (_hwnd == nint.Zero || !NativeMethods.IsWindow(_hwnd))
+        {
+            _privacyHotKeyRegistered = false;
+            _peekHotKeyRegistered = false;
+            _strengthControlHotKeyRegistered = false;
+            return;
+        }
+
+        if (_privacyHotKeyRegistered)
+        {
+            _ = NativeMethods.UnregisterHotKey(_hwnd, PrivacyHotKeyId);
+            _privacyHotKeyRegistered = false;
+        }
+
+        if (_peekHotKeyRegistered)
+        {
+            _ = NativeMethods.UnregisterHotKey(_hwnd, PeekHotKeyId);
+            _peekHotKeyRegistered = false;
+        }
+
+        if (_strengthControlHotKeyRegistered)
+        {
+            _ = NativeMethods.UnregisterHotKey(_hwnd, StrengthControlHotKeyId);
+            _strengthControlHotKeyRegistered = false;
+        }
     }
 
     private static void EnsureClassRegistered()
@@ -282,7 +334,9 @@ internal sealed class OverlayWindow : IDisposable
     private static nint WndProc(nint hwnd, uint message, nint wParam, nint lParam)
     {
         if (message == NativeMethods.WmHotKey &&
-            (wParam.ToInt32() == PrivacyHotKeyId || wParam.ToInt32() == PeekHotKeyId))
+            (wParam.ToInt32() == PrivacyHotKeyId ||
+                wParam.ToInt32() == PeekHotKeyId ||
+                wParam.ToInt32() == StrengthControlHotKeyId))
         {
             OverlayWindow? window;
             lock (WindowSync)
@@ -296,14 +350,18 @@ internal sealed class OverlayWindow : IDisposable
                 {
                     window?.PrivacyHotKeyPressed?.Invoke();
                 }
-                else
+                else if (wParam.ToInt32() == PeekHotKeyId)
                 {
                     window?.PeekHotKeyPressed?.Invoke();
+                }
+                else
+                {
+                    window?.StrengthControlHotKeyPressed?.Invoke();
                 }
             }
             catch (Exception exception)
             {
-                AppDiagnostics.WriteException("Privacy hotkey callback error", exception);
+                AppDiagnostics.WriteException("Overlay hotkey callback error", exception);
             }
 
             return nint.Zero;

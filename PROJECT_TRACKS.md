@@ -24,12 +24,21 @@ arrays, or WPF `BitmapSource`. It can replace the older CPU Invert path only
 after visual correctness, input pass-through, frame pacing, CPU, GPU, and
 memory usage are measured on the real KakaoTalk window.
 
-The current tray controls include Enabled and Privacy mode (`Ctrl+H`). The
-compact invert-strength window exposes synchronized Enabled and Privacy
-checkboxes, a 0-100% slider, and a close button. Disabling the effect from this
-window pauses GPU rendering and hides the overlay without rebuilding the WGC
-session, so re-enabling is immediate. Settings are stored on graceful exit in
+The current tray controls include Enabled, Full privacy (`Ctrl+H`), Auto
+privacy, and Focus Reveal (`Ctrl+Shift+H`). The 281x40 compact control exposes
+synchronized GPU invert, Privacy, and Auto checkboxes, a Focus Reveal eye
+button, a 0-100% slider, and a close button. Focus Reveal temporarily removes
+Full privacy for eight seconds and then locks the content again. Auto privacy
+masks content whenever KakaoTalk loses foreground focus. Disabling GPU invert
+pauses GPU rendering and hides the capture overlay without disabling privacy.
+Settings are stored on graceful exit in
 `%LOCALAPPDATA%\KakaoTalkGpuInvertSpike\settings.json`.
+
+When a GPU frame is visible, privacy remains a branch in the existing shader.
+When GPU invert is disabled or its pipeline is recovering, two solid native
+mask windows cover the same title and body regions without WGC or pixel
+processing. These fallback windows are disabled, transparent to hit testing,
+and verified with `WindowFromPoint` before they remain visible.
 
 Window discovery accepts only a visible KakaoTalk process window whose title is
 exactly `KakaoTalk` or the Korean localized KakaoTalk title. It never falls back
@@ -37,12 +46,27 @@ to a large untitled or room-titled window, so detached chat windows remain
 excluded.
 
 KakaoTalk location events are marshalled to the WinForms UI thread and
-coalesced into 50 ms refreshes. This keeps repeated Win32/AHK window-position
-updates from concurrently touching the WGC and D3D11 pipeline. Transient WGC
-startup or frame errors use bounded exponential retry instead of disabling the
-effect or retrying continuously. Runtime status is written to `spike.log`, and
-process lifecycle or unhandled exceptions are written to `crash.log` in the
-same local settings directory. Both logs rotate at 1 MB.
+coalesced into 100 ms refreshes. The coalescing flag remains set for the full
+debounce period, so repeated Win32/AHK window-position updates cannot flood the
+UI message queue. Overlay and strength-control position calls are skipped when
+their bounds have not changed.
+
+The overlay is a disabled native window in addition to using transparent and
+non-activating extended styles. This removes it from mouse hit testing across
+process boundaries while keeping the DXGI content visible. WGC rendering is
+capped at 30 FPS, the DXGI device queue is limited to one frame, and the shader
+uses point sampling and branch-only edge masking to reduce latency and GPU work.
+
+Transient WGC startup or frame errors use bounded exponential retry instead of
+disabling the effect or retrying continuously. WGC callbacks are detached and
+drained before capture resources are released. Runtime status is written to
+`spike.log`, and process lifecycle or unhandled exceptions are written to
+`crash.log` in the same local settings directory. Both logs rotate at 1 MB.
+An `active-session.txt` marker remains after an unclean shutdown so the next
+launch can record the interrupted session in `crash.log`.
+Launching the executable while an instance is already running signals that
+instance to clear its retry backoff and refresh immediately instead of exiting
+silently with no recovery action.
 
 For one-shot visual diagnostics only, set `KAKAOTALK_GPU_CAPTURE_PATH` to a PNG
 path before launch. The renderer then reads back and saves its first processed
@@ -55,6 +79,8 @@ creation and click-through behavior while leaving the normal pipeline idle.
 When combined with `KAKAOTALK_GPU_CAPTURE_PATH`, the smoke test renders a
 synthetic GPU frame through the strength and privacy shader settings. Set
 `KAKAOTALK_GPU_CONTROL_CAPTURE_PATH` to capture the rendered strength control.
+Set `KAKAOTALK_GPU_AUTO_EXIT_MS` to 1000-120000 during lifecycle QA to exercise
+the normal WGC and GPU disposal path after the requested number of milliseconds.
 
 ## Filter Lab
 

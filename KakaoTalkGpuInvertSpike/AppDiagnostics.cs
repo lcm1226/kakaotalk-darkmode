@@ -11,6 +11,7 @@ internal static class AppDiagnostics
         "KakaoTalkGpuInvertSpike");
     private static readonly string StatusLogPath = Path.Combine(DirectoryPath, "spike.log");
     private static readonly string CrashLogPath = Path.Combine(DirectoryPath, "crash.log");
+    private static readonly string SessionMarkerPath = Path.Combine(DirectoryPath, "active-session.txt");
 
     public static void Initialize()
     {
@@ -27,9 +28,29 @@ internal static class AppDiagnostics
             args.SetObserved();
         };
 
-        WriteLifecycle(
-            $"Process started | PID={Environment.ProcessId} | " +
-            $"OS={RuntimeInformation.OSDescription} | Version={Environment.OSVersion.Version}");
+        var sessionDescription =
+            $"PID={Environment.ProcessId} | Started={DateTimeOffset.Now:O} | " +
+            $"OS={RuntimeInformation.OSDescription} | Version={Environment.OSVersion.Version}";
+        try
+        {
+            lock (Sync)
+            {
+                Directory.CreateDirectory(DirectoryPath);
+                if (File.Exists(SessionMarkerPath))
+                {
+                    var previousSession = File.ReadAllText(SessionMarkerPath).Trim();
+                    AppendCore(CrashLogPath, $"Previous session ended unexpectedly | {previousSession}");
+                }
+
+                File.WriteAllText(SessionMarkerPath, sessionDescription);
+            }
+        }
+        catch
+        {
+            // Session tracking is best effort.
+        }
+
+        WriteLifecycle($"Process started | {sessionDescription}");
     }
 
     public static void WriteStatus(string message)
@@ -47,6 +68,27 @@ internal static class AppDiagnostics
         Append(CrashLogPath, $"{context}{Environment.NewLine}{exception}");
     }
 
+    public static void CompleteSession(string reason, bool cleanShutdown)
+    {
+        WriteLifecycle($"Process stopped | Reason={reason}");
+        if (!cleanShutdown)
+        {
+            return;
+        }
+
+        try
+        {
+            lock (Sync)
+            {
+                File.Delete(SessionMarkerPath);
+            }
+        }
+        catch
+        {
+            // Session tracking is best effort.
+        }
+    }
+
     private static void Append(string path, string message)
     {
         try
@@ -54,16 +96,21 @@ internal static class AppDiagnostics
             lock (Sync)
             {
                 Directory.CreateDirectory(DirectoryPath);
-                RotateIfNeeded(path);
-                File.AppendAllText(
-                    path,
-                    $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+                AppendCore(path, message);
             }
         }
         catch
         {
             // Diagnostics must never affect the rendering process.
         }
+    }
+
+    private static void AppendCore(string path, string message)
+    {
+        RotateIfNeeded(path);
+        File.AppendAllText(
+            path,
+            $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
     }
 
     private static void RotateIfNeeded(string path)

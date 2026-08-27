@@ -28,11 +28,14 @@ internal interface IDirect3DDxgiInterfaceAccess
 
 internal sealed class WgcCaptureSession : IDisposable
 {
+    private const int MaximumRenderFramesPerSecond = 30;
     private static readonly Guid GraphicsCaptureItemIid = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
     private static readonly Guid D3D11Texture2DIid = new("6F15AAF2-D208-4E89-9AB4-489535D34F9C");
     private readonly object _sync = new();
+    private readonly object _captureGate = new();
     private readonly GpuRenderer _renderer;
     private readonly Action _firstFramePresented;
+    private readonly Action _captureFaulted;
     private readonly IDirect3DDevice _winRtDevice;
     private readonly Stopwatch _frameClock = Stopwatch.StartNew();
     private Direct3D11CaptureFramePool? _framePool;
@@ -47,11 +50,16 @@ internal sealed class WgcCaptureSession : IDisposable
     private bool _isFaulted;
     private volatile bool _renderingEnabled = true;
     private bool _disposed;
+    private long _lastRenderedTimestamp;
 
-    public WgcCaptureSession(GpuRenderer renderer, Action firstFramePresented)
+    public WgcCaptureSession(
+        GpuRenderer renderer,
+        Action firstFramePresented,
+        Action captureFaulted)
     {
         _renderer = renderer;
         _firstFramePresented = firstFramePresented;
+        _captureFaulted = captureFaulted;
         _winRtDevice = renderer.CreateWinRtDevice();
     }
 
@@ -82,33 +90,59 @@ internal sealed class WgcCaptureSession : IDisposable
 
     public void Start(nint targetHandle)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!GraphicsCaptureSession.IsSupported())
-        {
-            throw new NotSupportedException("Windows.Graphics.Capture is not supported.");
-        }
-
-        var item = CreateItemForWindow(targetHandle) ??
-            throw new InvalidOperationException("Could not create a WGC item for KakaoTalk.");
         StopCapture();
-        _item = item;
-        _captureSize = item.Size;
-        _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-            _winRtDevice,
-            DirectXPixelFormat.B8G8R8A8UIntNormalized,
-            2,
-            _captureSize);
-        _framePool.FrameArrived += OnFrameArrived;
-        _session = _framePool.CreateCaptureSession(item);
-        _session.IsCursorCaptureEnabled = false;
-        TryDisableCaptureBorder(_session);
-        _session.StartCapture();
-        lock (_sync)
+        CaptureResources cleanup = default;
+
+        try
         {
-            _isFaulted = false;
+            lock (_captureGate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (!GraphicsCaptureSession.IsSupported())
+                {
+                    throw new NotSupportedException("Windows.Graphics.Capture is not supported.");
+                }
+
+                var item = CreateItemForWindow(targetHandle) ??
+                    throw new InvalidOperationException("Could not create a WGC item for KakaoTalk.");
+                try
+                {
+                    _item = item;
+                    _captureSize = item.Size;
+                    _lastRenderedTimestamp = 0;
+                    _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
+                        _winRtDevice,
+                        DirectXPixelFormat.B8G8R8A8UIntNormalized,
+                        2,
+                        _captureSize);
+                    _framePool.FrameArrived += OnFrameArrived;
+                    _session = _framePool.CreateCaptureSession(item);
+                    _session.IsCursorCaptureEnabled = false;
+                    TryDisableCaptureBorder(_session);
+                    _renderingEnabled = true;
+                    lock (_sync)
+                    {
+                        _isFaulted = false;
+                        _hasPresentedFrame = false;
+                        _status = "Waiting for GPU frame";
+                    }
+
+                    _session.StartCapture();
+                }
+                catch
+                {
+                    cleanup = DetachCaptureCore();
+                    throw;
+                }
+            }
+        }
+        catch
+        {
+            DisposeCaptureResources(cleanup);
+            throw;
         }
 
-        SetStatus("Waiting for GPU frame");
+        DisposeCaptureResources(cleanup);
     }
 
     public void SetRenderingEnabled(bool enabled)
@@ -118,74 +152,166 @@ internal sealed class WgcCaptureSession : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        CaptureResources resources;
+        lock (_captureGate)
         {
-            return;
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _renderingEnabled = false;
+            resources = DetachCaptureCore();
         }
 
-        _disposed = true;
-        StopCapture();
-        _winRtDevice.Dispose();
+        DisposeCaptureResources(resources);
+        try
+        {
+            _winRtDevice.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("WinRT D3D device disposal error", exception);
+        }
     }
 
     private void StopCapture()
     {
-        if (_framePool is not null)
+        CaptureResources resources;
+        lock (_captureGate)
         {
-            _framePool.FrameArrived -= OnFrameArrived;
+            resources = DetachCaptureCore();
         }
 
-        _session?.Dispose();
-        _framePool?.Dispose();
+        DisposeCaptureResources(resources);
+    }
+
+    private CaptureResources DetachCaptureCore()
+    {
+        var framePool = _framePool;
+        var session = _session;
         _item = null;
         _session = null;
         _framePool = null;
+
+        try
+        {
+            if (framePool is not null)
+            {
+                framePool.FrameArrived -= OnFrameArrived;
+            }
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Frame callback detach error", exception);
+        }
+
         lock (_sync)
         {
             _hasPresentedFrame = false;
             _status = "Idle";
         }
+
+        return new CaptureResources(session, framePool);
+    }
+
+    private static void DisposeCaptureResources(CaptureResources resources)
+    {
+        try
+        {
+            resources.Session?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Capture session disposal error", exception);
+        }
+
+        try
+        {
+            resources.FramePool?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Frame pool disposal error", exception);
+        }
     }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
-        try
+        var notifyFault = false;
+        lock (_captureGate)
         {
-            using var frame = sender.TryGetNextFrame();
-            if (frame is null || frame.ContentSize.Width <= 0 || frame.ContentSize.Height <= 0)
+            if (_disposed || sender != _framePool)
             {
                 return;
             }
 
-            if (!_captureSize.Equals(frame.ContentSize))
+            try
             {
-                _captureSize = frame.ContentSize;
-                sender.Recreate(
-                    _winRtDevice,
-                    DirectXPixelFormat.B8G8R8A8UIntNormalized,
-                    2,
-                    _captureSize);
-                SetStatus("GPU frame pool resized");
-                return;
-            }
+                using var frame = sender.TryGetNextFrame();
+                if (frame is null || frame.ContentSize.Width <= 0 || frame.ContentSize.Height <= 0)
+                {
+                    return;
+                }
 
-            if (!_renderingEnabled)
+                if (!_captureSize.Equals(frame.ContentSize))
+                {
+                    _captureSize = frame.ContentSize;
+                    sender.Recreate(
+                        _winRtDevice,
+                        DirectXPixelFormat.B8G8R8A8UIntNormalized,
+                        2,
+                        _captureSize);
+                    SetStatus("GPU frame pool resized");
+                    return;
+                }
+
+                if (!_renderingEnabled || !ShouldRenderFrame())
+                {
+                    return;
+                }
+
+                using var texture = GetTexture(frame.Surface);
+                _renderer.Render(texture, _captureSize.Width, _captureSize.Height);
+                RecordPresentedFrame();
+            }
+            catch (Exception exception)
             {
-                return;
+                _renderingEnabled = false;
+                lock (_sync)
+                {
+                    notifyFault = !_isFaulted;
+                    _isFaulted = true;
+                    _status = $"Frame error: {exception.GetType().Name}: {exception.Message}";
+                }
             }
-
-            using var texture = GetTexture(frame.Surface);
-            _renderer.Render(texture, _captureSize.Width, _captureSize.Height);
-            RecordPresentedFrame();
         }
-        catch (Exception exception)
+
+        if (notifyFault)
         {
-            lock (_sync)
+            try
             {
-                _isFaulted = true;
-                _status = $"Frame error: {exception.GetType().Name}: {exception.Message}";
+                _captureFaulted();
+            }
+            catch (Exception exception)
+            {
+                AppDiagnostics.WriteException("Capture fault notification error", exception);
             }
         }
+    }
+
+    private bool ShouldRenderFrame()
+    {
+        var now = Stopwatch.GetTimestamp();
+        var minimumInterval = Stopwatch.Frequency / MaximumRenderFramesPerSecond;
+        if (_lastRenderedTimestamp != 0 && now - _lastRenderedTimestamp < minimumInterval)
+        {
+            return false;
+        }
+
+        _lastRenderedTimestamp = now;
+        return true;
     }
 
     private static GraphicsCaptureItem? CreateItemForWindow(nint hwnd)
@@ -265,4 +391,8 @@ internal sealed class WgcCaptureSession : IDisposable
             _status = status;
         }
     }
+
+    private readonly record struct CaptureResources(
+        GraphicsCaptureSession? Session,
+        Direct3D11CaptureFramePool? FramePool);
 }

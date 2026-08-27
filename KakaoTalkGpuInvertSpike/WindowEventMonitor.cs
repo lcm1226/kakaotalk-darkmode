@@ -18,7 +18,7 @@ internal sealed class WindowEventMonitor : IDisposable
     private readonly List<nint> _hooks = [];
     private uint _processId;
     private nint _targetHandle;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public WindowEventMonitor(Action windowChanged)
     {
@@ -34,15 +34,15 @@ internal sealed class WindowEventMonitor : IDisposable
             return;
         }
 
-        if (_processId == processId && _targetHandle == targetHandle)
+        if (_processId == processId && ReadTargetHandle() == targetHandle)
         {
             return;
         }
 
         Detach();
         _processId = processId;
-        _targetHandle = targetHandle;
-        AddHook(EventSystemForeground, EventSystemForeground);
+        Interlocked.Exchange(ref _targetHandle, targetHandle);
+        AddHook(EventSystemForeground, EventSystemForeground, 0);
         AddHook(EventSystemMoveSizeStart, EventSystemMoveSizeEnd);
         AddHook(EventSystemMinimizeStart, EventSystemMinimizeEnd);
         AddHook(EventObjectDestroy, EventObjectHide);
@@ -51,14 +51,14 @@ internal sealed class WindowEventMonitor : IDisposable
 
     public void Detach()
     {
+        _processId = 0;
+        Interlocked.Exchange(ref _targetHandle, nint.Zero);
         foreach (var hook in _hooks)
         {
             _ = NativeMethods.UnhookWinEvent(hook);
         }
 
         _hooks.Clear();
-        _processId = 0;
-        _targetHandle = nint.Zero;
     }
 
     public void Dispose()
@@ -68,18 +68,18 @@ internal sealed class WindowEventMonitor : IDisposable
             return;
         }
 
-        Detach();
         _disposed = true;
+        Detach();
     }
 
-    private void AddHook(uint eventMin, uint eventMax)
+    private void AddHook(uint eventMin, uint eventMax, uint? processId = null)
     {
         var hook = NativeMethods.SetWinEventHook(
             eventMin,
             eventMax,
             nint.Zero,
             _eventProc,
-            _processId,
+            processId ?? _processId,
             0,
             WinEventOutOfContext);
         if (hook != nint.Zero)
@@ -97,7 +97,18 @@ internal sealed class WindowEventMonitor : IDisposable
         uint eventThreadId,
         uint eventTime)
     {
-        if (_disposed || hwnd != _targetHandle)
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (eventType == EventSystemForeground)
+        {
+            NotifyWindowChanged();
+            return;
+        }
+
+        if (hwnd != ReadTargetHandle())
         {
             return;
         }
@@ -107,6 +118,11 @@ internal sealed class WindowEventMonitor : IDisposable
             return;
         }
 
+        NotifyWindowChanged();
+    }
+
+    private void NotifyWindowChanged()
+    {
         try
         {
             _windowChanged();
@@ -115,5 +131,10 @@ internal sealed class WindowEventMonitor : IDisposable
         {
             // The safety timer retries without allowing a native callback to terminate the app.
         }
+    }
+
+    private nint ReadTargetHandle()
+    {
+        return Interlocked.CompareExchange(ref _targetHandle, nint.Zero, nint.Zero);
     }
 }

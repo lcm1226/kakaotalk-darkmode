@@ -7,6 +7,7 @@ internal sealed class OverlayWindow : IDisposable
 {
     private const string WindowClassName = "KakaoTalkGpuInvertSpike.Overlay";
     private const int PrivacyHotKeyId = 0x4B47;
+    private const int PeekHotKeyId = 0x4B48;
     private const uint VirtualKeyH = 0x48;
     private static readonly NativeMethods.WndProc WindowProc = WndProc;
     private static readonly object ClassSync = new();
@@ -18,8 +19,13 @@ internal sealed class OverlayWindow : IDisposable
     private nint _owner;
     private bool _visible;
     private bool _privacyHotKeyRegistered;
+    private bool _peekHotKeyRegistered;
+    private TargetWindow? _lastTarget;
+    private bool _inputPassThroughVerified;
 
     public event Action? PrivacyHotKeyPressed;
+
+    public event Action? PeekHotKeyPressed;
 
     public nint Handle
     {
@@ -37,35 +43,54 @@ internal sealed class OverlayWindow : IDisposable
     public void Position(TargetWindow target, bool show)
     {
         EnsureCreated();
-        if (_owner != target.Handle)
+        var ownerChanged = _owner != target.Handle;
+        if (ownerChanged)
         {
             _ = NativeMethods.SetWindowLongPtr(_hwnd, NativeMethods.GwlpHwndParent, target.Handle);
             _owner = target.Handle;
+            _inputPassThroughVerified = false;
         }
 
-        var flags = NativeMethods.SwpNoActivate | NativeMethods.SwpNoZOrder;
-        if (show)
+        var boundsChanged = _lastTarget is null ||
+            _lastTarget.Value.X != target.X ||
+            _lastTarget.Value.Y != target.Y ||
+            _lastTarget.Value.Width != target.Width ||
+            _lastTarget.Value.Height != target.Height;
+        var needsShow = show && !IsVisible;
+        if (ownerChanged || boundsChanged || needsShow)
         {
-            flags |= NativeMethods.SwpShowWindow;
+            var flags = NativeMethods.SwpNoActivate | NativeMethods.SwpNoZOrder;
+            if (show)
+            {
+                flags |= NativeMethods.SwpShowWindow;
+            }
+
+            _ = NativeMethods.SetWindowPos(
+                _hwnd,
+                nint.Zero,
+                target.X,
+                target.Y,
+                target.Width,
+                target.Height,
+                flags);
+            _lastTarget = target;
         }
 
-        _ = NativeMethods.SetWindowPos(
-            _hwnd,
-            nint.Zero,
-            target.X,
-            target.Y,
-            target.Width,
-            target.Height,
-            flags);
         if (show)
         {
-            ShowWithoutActivation();
-            if (!IsInputPassThrough())
+            if (needsShow)
+            {
+                ShowWithoutActivation();
+            }
+
+            if (!_inputPassThroughVerified && !IsInputPassThrough())
             {
                 Hide();
                 throw new InvalidOperationException(
                     "The GPU overlay failed its input pass-through check.");
             }
+
+            _inputPassThroughVerified = true;
         }
         else
         {
@@ -94,6 +119,12 @@ internal sealed class OverlayWindow : IDisposable
                 _privacyHotKeyRegistered = false;
             }
 
+            if (_peekHotKeyRegistered)
+            {
+                _ = NativeMethods.UnregisterHotKey(_hwnd, PeekHotKeyId);
+                _peekHotKeyRegistered = false;
+            }
+
             lock (WindowSync)
             {
                 Windows.Remove(_hwnd);
@@ -107,6 +138,8 @@ internal sealed class OverlayWindow : IDisposable
             _hwnd = nint.Zero;
             _owner = nint.Zero;
             _visible = false;
+            _lastTarget = null;
+            _inputPassThroughVerified = false;
         }
     }
 
@@ -128,6 +161,9 @@ internal sealed class OverlayWindow : IDisposable
             _owner = nint.Zero;
             _visible = false;
             _privacyHotKeyRegistered = false;
+            _peekHotKeyRegistered = false;
+            _lastTarget = null;
+            _inputPassThroughVerified = false;
         }
 
         EnsureClassRegistered();
@@ -139,7 +175,7 @@ internal sealed class OverlayWindow : IDisposable
                 NativeMethods.WsExNoActivate,
             WindowClassName,
             "KakaoTalk GPU Invert Spike",
-            NativeMethods.WsPopup,
+            NativeMethods.WsPopup | NativeMethods.WsDisabled,
             0,
             0,
             1,
@@ -181,6 +217,11 @@ internal sealed class OverlayWindow : IDisposable
             _hwnd,
             PrivacyHotKeyId,
             NativeMethods.ModControl | NativeMethods.ModNoRepeat,
+            VirtualKeyH);
+        _peekHotKeyRegistered = NativeMethods.RegisterHotKey(
+            _hwnd,
+            PeekHotKeyId,
+            NativeMethods.ModControl | NativeMethods.ModShift | NativeMethods.ModNoRepeat,
             VirtualKeyH);
     }
 
@@ -234,12 +275,14 @@ internal sealed class OverlayWindow : IDisposable
             X = bounds.Left + bounds.Width / 2,
             Y = bounds.Top + bounds.Height / 2
         };
-        return NativeMethods.WindowFromPoint(hitPoint) != _hwnd;
+        return !NativeMethods.IsWindowEnabled(_hwnd) &&
+            NativeMethods.WindowFromPoint(hitPoint) != _hwnd;
     }
 
     private static nint WndProc(nint hwnd, uint message, nint wParam, nint lParam)
     {
-        if (message == NativeMethods.WmHotKey && wParam.ToInt32() == PrivacyHotKeyId)
+        if (message == NativeMethods.WmHotKey &&
+            (wParam.ToInt32() == PrivacyHotKeyId || wParam.ToInt32() == PeekHotKeyId))
         {
             OverlayWindow? window;
             lock (WindowSync)
@@ -247,7 +290,22 @@ internal sealed class OverlayWindow : IDisposable
                 Windows.TryGetValue(hwnd, out window);
             }
 
-            window?.PrivacyHotKeyPressed?.Invoke();
+            try
+            {
+                if (wParam.ToInt32() == PrivacyHotKeyId)
+                {
+                    window?.PrivacyHotKeyPressed?.Invoke();
+                }
+                else
+                {
+                    window?.PeekHotKeyPressed?.Invoke();
+                }
+            }
+            catch (Exception exception)
+            {
+                AppDiagnostics.WriteException("Privacy hotkey callback error", exception);
+            }
+
             return nint.Zero;
         }
 

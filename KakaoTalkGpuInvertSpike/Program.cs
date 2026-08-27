@@ -5,21 +5,29 @@ namespace KakaoTalkGpuInvertSpike;
 internal static class Program
 {
     private const string InstanceMutexName = @"Local\KakaoTalkGpuInvertSpike.Singleton";
+    private const string InstanceRefreshEventName = @"Local\KakaoTalkGpuInvertSpike.Refresh";
 
     [STAThread]
     private static void Main()
     {
+        using var instanceRefreshEvent = new EventWaitHandle(
+            false,
+            EventResetMode.AutoReset,
+            InstanceRefreshEventName);
         using var instanceMutex = new Mutex(true, InstanceMutexName, out var isFirstInstance);
         if (!isFirstInstance)
         {
+            instanceRefreshEvent.Set();
             return;
         }
 
         AppDiagnostics.Initialize();
-        _ = NativeMethods.SetProcessDpiAwarenessContext(new nint(-4));
-        ApplicationConfiguration.Initialize();
+        var shutdownReason = "graceful";
         try
         {
+            _ = NativeMethods.SetProcessDpiAwarenessContext(new nint(-4));
+            ApplicationConfiguration.Initialize();
+
             if (string.Equals(
                 Environment.GetEnvironmentVariable("KAKAOTALK_GPU_OVERLAY_SMOKE_TEST"),
                 "1",
@@ -30,17 +38,27 @@ internal static class Program
                 return;
             }
 
-            using var application = new GpuInvertApplication();
+            using var application = new GpuInvertApplication(instanceRefreshEvent);
             Application.Run(application);
         }
         catch (Exception exception)
         {
+            shutdownReason = "fatal main-loop exception";
             AppDiagnostics.WriteException("Fatal main-loop exception", exception);
         }
         finally
         {
-            AppDiagnostics.WriteLifecycle("Process stopped");
-            instanceMutex.ReleaseMutex();
+            AppDiagnostics.CompleteSession(
+                shutdownReason,
+                string.Equals(shutdownReason, "graceful", StringComparison.Ordinal));
+            try
+            {
+                instanceMutex.ReleaseMutex();
+            }
+            catch (ApplicationException exception)
+            {
+                AppDiagnostics.WriteException("Singleton mutex release error", exception);
+            }
         }
     }
 }
@@ -128,10 +146,14 @@ internal sealed class OverlaySmokeTestApplication : ApplicationContext
             75,
             true,
             true,
+            true,
             _ => { },
             _ => { },
             _ => { },
+            _ => { },
+            () => { },
             () => { });
+        slider.SetPeekActive(true);
         slider.SaveDiagnosticImage(capturePath);
     }
 }
@@ -141,19 +163,26 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private const int SafetyRefreshIntervalMs = 5000;
     private const int StartupRefreshIntervalMs = 100;
     private const int WaitingRefreshIntervalMs = 1000;
-    private const int WindowEventDebounceIntervalMs = 50;
+    private const int WindowEventDebounceIntervalMs = 100;
     private const int PipelineRetryBaseIntervalMs = 2000;
     private const int PipelineRetryMaximumIntervalMs = 30000;
+    private const int PeekDurationMs = 8000;
     private readonly Icon _applicationIcon;
     private readonly NotifyIcon _trayIcon;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly System.Windows.Forms.Timer _windowEventTimer;
+    private readonly System.Windows.Forms.Timer _peekTimer;
+    private readonly System.Windows.Forms.Timer? _automaticExitTimer;
+    private readonly RegisteredWaitHandle _instanceRefreshRegistration;
     private readonly OverlayWindow _overlay = new();
+    private readonly PrivacyMaskOverlay _privacyMask = new();
     private readonly WindowEventMonitor _windowEventMonitor;
     private readonly StrengthSliderForm _strengthSlider;
     private readonly Control _uiDispatcher = new();
     private ToolStripMenuItem? _enabledMenuItem;
     private ToolStripMenuItem? _privacyModeMenuItem;
+    private ToolStripMenuItem? _autoPrivacyMenuItem;
+    private ToolStripMenuItem? _peekMenuItem;
     private ToolStripMenuItem? _strengthMenuItem;
     private ToolStripMenuItem? _showStrengthControlMenuItem;
     private ToolStripMenuItem? _statusMenuItem;
@@ -162,6 +191,9 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private nint _targetHandle;
     private bool _enabled = true;
     private bool _privacyModeEnabled;
+    private bool _autoPrivacyEnabled;
+    private bool _peekActive;
+    private nint _peekForegroundAnchor;
     private bool _showStrengthControl;
     private int _invertStrength = 100;
     private int _windowRefreshQueued;
@@ -172,12 +204,15 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private string? _lastLoggedState;
     private string? _lastDisplayedStatus;
     private DateTimeOffset _lastLogAt;
+    private bool _refreshInProgress;
+    private bool _shuttingDown;
 
-    public GpuInvertApplication()
+    public GpuInvertApplication(EventWaitHandle instanceRefreshEvent)
     {
         var settings = GpuInvertSettings.Load();
         _enabled = settings.Enabled;
         _privacyModeEnabled = settings.PrivacyModeEnabled;
+        _autoPrivacyEnabled = settings.AutoPrivacyEnabled;
         _invertStrength = Math.Clamp(settings.InvertStrength, 0, 100);
         _showStrengthControl = settings.ShowStrengthControl;
         _uiDispatcher.CreateControl();
@@ -188,18 +223,24 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _windowEventTimer.Tick += (_, _) =>
         {
             _windowEventTimer.Stop();
+            Interlocked.Exchange(ref _windowRefreshQueued, 0);
             Refresh();
         };
+        _peekTimer = new System.Windows.Forms.Timer { Interval = PeekDurationMs };
+        _peekTimer.Tick += (_, _) => EndPeek(true);
         _strengthSlider = new StrengthSliderForm(
             _invertStrength,
             _enabled,
             _privacyModeEnabled,
+            _autoPrivacyEnabled,
             SetInvertStrength,
             SetEnabled,
             SetPrivacyMode,
+            SetAutoPrivacy,
+            TogglePeekFromControl,
             () => SetStrengthControlVisible(false));
         _overlay.PrivacyHotKeyPressed += TogglePrivacyMode;
-        _ = _overlay.Handle;
+        _overlay.PeekHotKeyPressed += TogglePeek;
         _windowEventMonitor = new WindowEventMonitor(QueueWindowRefresh);
         _applicationIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ??
             (Icon)SystemIcons.Application.Clone();
@@ -214,28 +255,44 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
         Refresh();
+        _automaticExitTimer = CreateAutomaticExitTimer();
+        _instanceRefreshRegistration = ThreadPool.RegisterWaitForSingleObject(
+            instanceRefreshEvent,
+            (_, _) => QueueInstanceRefresh(),
+            null,
+            Timeout.Infinite,
+            false);
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            _shuttingDown = true;
+            _instanceRefreshRegistration.Unregister(null);
             _timer.Stop();
             _timer.Dispose();
             _windowEventTimer.Stop();
             _windowEventTimer.Dispose();
+            _peekTimer.Stop();
+            _peekTimer.Dispose();
+            _automaticExitTimer?.Stop();
+            _automaticExitTimer?.Dispose();
             _windowEventMonitor.Dispose();
             GpuInvertSettings.Save(new GpuInvertSettings
             {
                 Enabled = _enabled,
                 PrivacyModeEnabled = _privacyModeEnabled,
+                AutoPrivacyEnabled = _autoPrivacyEnabled,
                 InvertStrength = _invertStrength,
                 ShowStrengthControl = _showStrengthControl
             });
-            _strengthSlider.Dispose();
             DisposePipeline();
+            _privacyMask.Dispose();
+            _strengthSlider.Dispose();
             _uiDispatcher.Dispose();
             _overlay.PrivacyHotKeyPressed -= TogglePrivacyMode;
+            _overlay.PeekHotKeyPressed -= TogglePeek;
             _overlay.Dispose();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
@@ -243,6 +300,59 @@ internal sealed class GpuInvertApplication : ApplicationContext
         }
 
         base.Dispose(disposing);
+    }
+
+    private System.Windows.Forms.Timer? CreateAutomaticExitTimer()
+    {
+        if (!int.TryParse(
+                Environment.GetEnvironmentVariable("KAKAOTALK_GPU_AUTO_EXIT_MS"),
+                out var interval))
+        {
+            return null;
+        }
+
+        var timer = new System.Windows.Forms.Timer
+        {
+            Interval = Math.Clamp(interval, 1000, 120000)
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            ExitThread();
+        };
+        timer.Start();
+        return timer;
+    }
+
+    private void QueueInstanceRefresh()
+    {
+        if (_shuttingDown || _uiDispatcher.IsDisposed || !_uiDispatcher.IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            _uiDispatcher.BeginInvoke((Action)(() =>
+            {
+                if (_shuttingDown)
+                {
+                    return;
+                }
+
+                AppDiagnostics.WriteStatus("Existing instance requested an immediate refresh");
+                ResetPipelineRetry();
+                Refresh();
+            }));
+        }
+        catch (ObjectDisposedException)
+        {
+            // Shutdown can race with the named refresh event.
+        }
+        catch (InvalidOperationException)
+        {
+            // Shutdown can race with the named refresh event.
+        }
     }
 
     private ContextMenuStrip BuildMenu()
@@ -255,7 +365,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
         };
         _enabledMenuItem.CheckedChanged += (_, _) => SetEnabled(_enabledMenuItem.Checked);
         menu.Items.Add(_enabledMenuItem);
-        _privacyModeMenuItem = new ToolStripMenuItem("Privacy mode (Ctrl+H)")
+        _privacyModeMenuItem = new ToolStripMenuItem("Full privacy (Ctrl+H)")
         {
             Checked = _privacyModeEnabled,
             CheckOnClick = true
@@ -263,6 +373,17 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _privacyModeMenuItem.CheckedChanged += (_, _) =>
             SetPrivacyMode(_privacyModeMenuItem.Checked);
         menu.Items.Add(_privacyModeMenuItem);
+        _autoPrivacyMenuItem = new ToolStripMenuItem("Auto privacy when unfocused")
+        {
+            Checked = _autoPrivacyEnabled,
+            CheckOnClick = true
+        };
+        _autoPrivacyMenuItem.CheckedChanged += (_, _) =>
+            SetAutoPrivacy(_autoPrivacyMenuItem.Checked);
+        menu.Items.Add(_autoPrivacyMenuItem);
+        _peekMenuItem = new ToolStripMenuItem("Focus reveal for 8 seconds (Ctrl+Shift+H)");
+        _peekMenuItem.Click += (_, _) => TogglePeek();
+        menu.Items.Add(_peekMenuItem);
         _strengthMenuItem = new ToolStripMenuItem($"Invert strength: {_invertStrength}%");
         _strengthMenuItem.Click += (_, _) => SetStrengthControlVisible(true);
         menu.Items.Add(_strengthMenuItem);
@@ -283,28 +404,35 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void Refresh()
     {
-        if (!_enabled)
+        if (_shuttingDown || _refreshInProgress)
         {
-            _windowEventMonitor.Detach();
-            if (_targetHandle == nint.Zero ||
-                !KakaoTalkWindowFinder.TryGetWindowSnapshot(_targetHandle, out _))
-            {
-                DisposePipeline();
-            }
-            else
-            {
-                _capture?.SetRenderingEnabled(false);
-            }
-
-            _overlay.Hide();
-            if (!_showStrengthControl)
-            {
-                _strengthSlider.Hide();
-            }
-            SetStatus("Disabled");
             return;
         }
 
+        _refreshInProgress = true;
+        try
+        {
+            RefreshCore();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Refresh recovery", exception);
+            _windowEventMonitor.Detach();
+            DisposePipeline();
+            _overlay.Hide();
+            _privacyMask.Hide();
+            _strengthSlider.Hide();
+            _timer.Interval = WaitingRefreshIntervalMs;
+            SetStatus($"Recovering: {exception.GetType().Name}");
+        }
+        finally
+        {
+            _refreshInProgress = false;
+        }
+    }
+
+    private void RefreshCore()
+    {
         var target = _targetHandle != nint.Zero &&
             KakaoTalkWindowFinder.TryGetWindowSnapshot(_targetHandle, out var cachedTarget)
                 ? cachedTarget
@@ -319,7 +447,9 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _windowEventMonitor.Detach();
             DisposePipeline();
             _overlay.Hide();
+            _privacyMask.Hide();
             _strengthSlider.Hide();
+            EndPeek(false);
             SetStatus("Waiting for KakaoTalk");
             return;
         }
@@ -331,6 +461,26 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
         NativeMethods.GetWindowThreadProcessId(target.Value.Handle, out var targetProcessId);
         _windowEventMonitor.Attach(targetProcessId, target.Value.Handle);
+        var targetFocused = IsTargetForeground(target.Value.Handle);
+        if (_peekActive && !IsPeekContextValid(targetFocused))
+        {
+            EndPeek(false);
+        }
+
+        var effectivePrivacy = GetEffectivePrivacy(targetFocused);
+        var dpiScale = GetDpiScale(target.Value.Handle);
+        _strengthSlider.SetPeekActive(_peekActive);
+
+        if (!_enabled)
+        {
+            _capture?.SetRenderingEnabled(false);
+            _overlay.Hide();
+            _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
+            UpdateStrengthControl(target.Value);
+            _timer.Interval = SafetyRefreshIntervalMs;
+            SetStatus(effectivePrivacy ? "GPU disabled | Privacy active" : "GPU disabled");
+            return;
+        }
 
         if (_targetHandle != target.Value.Handle || _capture is null || _renderer is null)
         {
@@ -338,14 +488,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
             if (_failedTargetHandle == target.Value.Handle && now < _nextPipelineRetryAt)
             {
                 _overlay.Hide();
-                if (_showStrengthControl)
-                {
-                    _strengthSlider.ShowNear(target.Value);
-                }
-                else
-                {
-                    _strengthSlider.Hide();
-                }
+                _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
+                UpdateStrengthControl(target.Value);
 
                 _timer.Interval = WaitingRefreshIntervalMs;
                 var retrySeconds = Math.Max(
@@ -356,17 +500,19 @@ internal sealed class GpuInvertApplication : ApplicationContext
                 return;
             }
 
-            StartPipeline(target.Value);
+            StartPipeline(target.Value, effectivePrivacy);
         }
 
         if (_capture is null || _renderer is null)
         {
+            _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
             return;
         }
 
         if (_capture.IsFaulted)
         {
             SchedulePipelineRetry(target.Value, _capture.Status);
+            _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
             return;
         }
 
@@ -376,17 +522,19 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _renderer.ResizeOutput(target.Value.Width, target.Value.Height);
             _renderer.UpdateSettings(
                 _invertStrength,
-                _privacyModeEnabled,
-                GetDpiScale(target.Value.Handle));
+                effectivePrivacy,
+                dpiScale);
             _overlay.Position(target.Value, _capture.HasPresentedFrame);
-            if (_showStrengthControl)
+            if (_capture.HasPresentedFrame)
             {
-                _strengthSlider.ShowNear(target.Value);
+                _privacyMask.Hide();
             }
             else
             {
-                _strengthSlider.Hide();
+                _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
             }
+
+            UpdateStrengthControl(target.Value);
 
             if (_capture.HasPresentedFrame &&
                 _overlay.IsVisible &&
@@ -403,27 +551,29 @@ internal sealed class GpuInvertApplication : ApplicationContext
             SchedulePipelineRetry(
                 target.Value,
                 $"Pipeline error: {exception.GetType().Name}");
+            _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
         }
     }
 
-    private void StartPipeline(TargetWindow target)
+    private void StartPipeline(TargetWindow target, bool effectivePrivacy)
     {
         DisposePipeline();
         _timer.Interval = StartupRefreshIntervalMs;
-        _overlay.Position(target, false);
         try
         {
+            _overlay.Position(target, false);
             _renderer = new GpuRenderer(
                 _overlay.Handle,
                 target.Width,
                 target.Height,
                 _invertStrength,
-                _privacyModeEnabled,
+                effectivePrivacy,
                 GetDpiScale(target.Handle));
             _targetHandle = target.Handle;
             _capture = new WgcCaptureSession(
                 _renderer,
-                () => QueueFirstFrameDisplay(target.Handle));
+                () => QueueFirstFrameDisplay(target.Handle),
+                QueueWindowRefresh);
             _capture.Start(target.Handle);
             ResetPipelineRetry();
             SetStatus("Waiting for first GPU frame");
@@ -473,16 +623,33 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void DisposePipeline()
     {
-        _capture?.Dispose();
-        _capture = null;
-        _renderer?.Dispose();
-        _renderer = null;
         _targetHandle = nint.Zero;
+        var capture = _capture;
+        _capture = null;
+        try
+        {
+            capture?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Capture disposal error", exception);
+        }
+
+        var renderer = _renderer;
+        _renderer = null;
+        try
+        {
+            renderer?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Renderer disposal error", exception);
+        }
     }
 
     private void QueueFirstFrameDisplay(nint expectedTargetHandle)
     {
-        if (_uiDispatcher.IsDisposed || !_uiDispatcher.IsHandleCreated)
+        if (_shuttingDown || _uiDispatcher.IsDisposed || !_uiDispatcher.IsHandleCreated)
         {
             return;
         }
@@ -491,16 +658,36 @@ internal sealed class GpuInvertApplication : ApplicationContext
         {
             _uiDispatcher.BeginInvoke((Action)(() =>
             {
-                if (_targetHandle != expectedTargetHandle ||
-                    !KakaoTalkWindowFinder.TryGetWindowSnapshot(expectedTargetHandle, out var target))
+                try
                 {
-                    return;
-                }
+                    if (_shuttingDown ||
+                        _targetHandle != expectedTargetHandle ||
+                        !KakaoTalkWindowFinder.TryGetWindowSnapshot(expectedTargetHandle, out var target))
+                    {
+                        return;
+                    }
 
-                _overlay.Position(target, true);
-                if (_timer.Interval != SafetyRefreshIntervalMs)
+                    var targetFocused = IsTargetForeground(target.Handle);
+                    if (_peekActive && !IsPeekContextValid(targetFocused))
+                    {
+                        EndPeek(false);
+                    }
+
+                    _renderer?.UpdateSettings(
+                        _invertStrength,
+                        GetEffectivePrivacy(targetFocused),
+                        GetDpiScale(target.Handle));
+                    _overlay.Position(target, true);
+                    _privacyMask.Hide();
+                    if (_timer.Interval != SafetyRefreshIntervalMs)
+                    {
+                        _timer.Interval = SafetyRefreshIntervalMs;
+                    }
+                }
+                catch (Exception exception)
                 {
-                    _timer.Interval = SafetyRefreshIntervalMs;
+                    AppDiagnostics.WriteException("First-frame display recovery", exception);
+                    QueueWindowRefresh();
                 }
             }));
         }
@@ -515,8 +702,91 @@ internal sealed class GpuInvertApplication : ApplicationContext
         SetPrivacyMode(!_privacyModeEnabled);
     }
 
+    private void TogglePeek()
+    {
+        TogglePeek(false);
+    }
+
+    private void TogglePeekFromControl()
+    {
+        TogglePeek(true);
+    }
+
+    private void TogglePeek(bool allowUnfocusedControlRequest)
+    {
+        if (_peekActive)
+        {
+            EndPeek(true);
+            return;
+        }
+
+        var target = _targetHandle != nint.Zero &&
+            KakaoTalkWindowFinder.TryGetWindowSnapshot(_targetHandle, out var cachedTarget)
+                ? cachedTarget
+                : KakaoTalkWindowFinder.FindMainWindow();
+        if (target is null)
+        {
+            SetStatus("Focus reveal unavailable: KakaoTalk not found");
+            return;
+        }
+
+        if (!allowUnfocusedControlRequest && !IsTargetForeground(target.Value.Handle))
+        {
+            SetStatus("Focus reveal blocked while KakaoTalk is unfocused");
+            return;
+        }
+
+        if (!_privacyModeEnabled)
+        {
+            SetStatus("Focus reveal requires Full privacy");
+            return;
+        }
+
+        _peekActive = true;
+        _peekForegroundAnchor = NativeMethods.GetForegroundWindow();
+        _peekTimer.Stop();
+        _peekTimer.Start();
+        UpdatePeekUi();
+        AppDiagnostics.WriteStatus("Focus reveal started | 8 seconds");
+        Refresh();
+    }
+
+    private void EndPeek(bool refresh)
+    {
+        if (!_peekActive)
+        {
+            return;
+        }
+
+        _peekActive = false;
+        _peekForegroundAnchor = nint.Zero;
+        _peekTimer.Stop();
+        UpdatePeekUi();
+        AppDiagnostics.WriteStatus("Focus reveal ended");
+        if (refresh)
+        {
+            Refresh();
+        }
+    }
+
+    private void UpdatePeekUi()
+    {
+        _strengthSlider.SetPeekActive(_peekActive);
+        if (_peekMenuItem is not null)
+        {
+            _peekMenuItem.Text = _peekActive
+                ? "End focus reveal now (Ctrl+Shift+H)"
+                : "Focus reveal for 8 seconds (Ctrl+Shift+H)";
+        }
+    }
+
     private void QueueWindowRefresh()
     {
+        if (_shuttingDown)
+        {
+            return;
+        }
+
         if (Interlocked.Exchange(ref _windowRefreshQueued, 1) != 0)
         {
             return;
@@ -532,7 +802,12 @@ internal sealed class GpuInvertApplication : ApplicationContext
         {
             _uiDispatcher.BeginInvoke((Action)(() =>
             {
-                Interlocked.Exchange(ref _windowRefreshQueued, 0);
+                if (_shuttingDown)
+                {
+                    Interlocked.Exchange(ref _windowRefreshQueued, 0);
+                    return;
+                }
+
                 if (!_windowEventTimer.Enabled)
                 {
                     _windowEventTimer.Start();
@@ -616,6 +891,10 @@ internal sealed class GpuInvertApplication : ApplicationContext
     {
         var changed = _privacyModeEnabled != enabled;
         _privacyModeEnabled = enabled;
+        if (!enabled)
+        {
+            EndPeek(false);
+        }
 
         if (_privacyModeMenuItem is not null && _privacyModeMenuItem.Checked != enabled)
         {
@@ -625,16 +904,83 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _strengthSlider.SetPrivacyMode(enabled);
         if (changed)
         {
-            ApplyRenderSettings();
+            Refresh();
+        }
+    }
+
+    private void SetAutoPrivacy(bool enabled)
+    {
+        var changed = _autoPrivacyEnabled != enabled;
+        _autoPrivacyEnabled = enabled;
+        if (_autoPrivacyMenuItem is not null && _autoPrivacyMenuItem.Checked != enabled)
+        {
+            _autoPrivacyMenuItem.Checked = enabled;
+        }
+
+        _strengthSlider.SetAutoPrivacy(enabled);
+        if (changed)
+        {
+            Refresh();
         }
     }
 
     private void ApplyRenderSettings()
     {
-        _renderer?.UpdateSettings(
-            _invertStrength,
-            _privacyModeEnabled,
-            GetDpiScale(_targetHandle));
+        try
+        {
+            _renderer?.UpdateSettings(
+                _invertStrength,
+                GetEffectivePrivacy(IsTargetForeground(_targetHandle)),
+                GetDpiScale(_targetHandle));
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException("Render setting update recovery", exception);
+            QueueWindowRefresh();
+        }
+    }
+
+    private void UpdateStrengthControl(TargetWindow target)
+    {
+        if (_showStrengthControl)
+        {
+            _strengthSlider.ShowNear(target);
+        }
+        else
+        {
+            _strengthSlider.Hide();
+        }
+    }
+
+    private bool GetEffectivePrivacy(bool targetFocused)
+    {
+        return !_peekActive &&
+            (_privacyModeEnabled || (_autoPrivacyEnabled && !targetFocused));
+    }
+
+    private bool IsPeekContextValid(bool targetFocused)
+    {
+        if (targetFocused)
+        {
+            return true;
+        }
+
+        var foreground = NativeMethods.GetForegroundWindow();
+        return foreground != nint.Zero && foreground == _peekForegroundAnchor;
+    }
+
+    private bool IsTargetForeground(nint targetHandle)
+    {
+        if (targetHandle == nint.Zero)
+        {
+            return false;
+        }
+
+        var foreground = NativeMethods.GetForegroundWindow();
+        return foreground == targetHandle ||
+            (_strengthSlider.IsHandleCreated && foreground == _strengthSlider.Handle) ||
+            (foreground != nint.Zero &&
+                NativeMethods.GetAncestor(foreground, NativeMethods.GaRootOwner) == targetHandle);
     }
 
     private static float GetDpiScale(nint hwnd)

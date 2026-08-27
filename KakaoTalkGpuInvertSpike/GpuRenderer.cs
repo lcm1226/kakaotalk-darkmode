@@ -18,7 +18,6 @@ internal sealed class GpuRenderer : IDisposable
     private const float TitleButtonsVisibleHeight = 38;
     private static readonly Guid DxgiDeviceIid = new("54EC77FA-1377-44E6-8C32-88FD5F44C84C");
     private readonly object _sync = new();
-    private readonly nint _overlayHandle;
     private readonly ID3D11Device _device;
     private readonly ID3D11DeviceContext _context;
     private readonly IDXGISwapChain1 _swapChain;
@@ -54,27 +53,53 @@ internal sealed class GpuRenderer : IDisposable
         bool privacyModeEnabled,
         float dpiScale)
     {
-        _overlayHandle = overlayHandle;
-        (_device, _context) = CreateDevice();
-        _swapChain = CreateSwapChain(width, height);
-        (_vertexShader, _pixelShader) = CreateShaders();
-        _sampler = _device.CreateSamplerState(new SamplerDescription
+        var (device, context) = CreateDevice();
+        IDXGISwapChain1? swapChain = null;
+        ID3D11VertexShader? vertexShader = null;
+        ID3D11PixelShader? pixelShader = null;
+        ID3D11SamplerState? sampler = null;
+        ID3D11Buffer? settingsBuffer = null;
+        try
         {
-            Filter = Filter.MinMagMipLinear,
-            AddressU = TextureAddressMode.Clamp,
-            AddressV = TextureAddressMode.Clamp,
-            AddressW = TextureAddressMode.Clamp,
-            ComparisonFunc = ComparisonFunction.Never,
-            MinLOD = 0,
-            MaxLOD = float.MaxValue
-        });
-        _settingsBuffer = _device.CreateBuffer(
-            (uint)Marshal.SizeOf<ShaderSettings>(),
-            BindFlags.ConstantBuffer,
-            ResourceUsage.Dynamic,
-            CpuAccessFlags.Write,
-            ResourceOptionFlags.None,
-            0);
+            swapChain = CreateSwapChain(device, overlayHandle, width, height);
+            (vertexShader, pixelShader) = CreateShaders(device);
+            sampler = device.CreateSamplerState(new SamplerDescription
+            {
+                Filter = Filter.MinMagMipPoint,
+                AddressU = TextureAddressMode.Clamp,
+                AddressV = TextureAddressMode.Clamp,
+                AddressW = TextureAddressMode.Clamp,
+                ComparisonFunc = ComparisonFunction.Never,
+                MinLOD = 0,
+                MaxLOD = float.MaxValue
+            });
+            settingsBuffer = device.CreateBuffer(
+                (uint)Marshal.SizeOf<ShaderSettings>(),
+                BindFlags.ConstantBuffer,
+                ResourceUsage.Dynamic,
+                CpuAccessFlags.Write,
+                ResourceOptionFlags.None,
+                0);
+        }
+        catch
+        {
+            DisposeResource(settingsBuffer, "startup settings buffer");
+            DisposeResource(sampler, "startup sampler");
+            DisposeResource(pixelShader, "startup pixel shader");
+            DisposeResource(vertexShader, "startup vertex shader");
+            DisposeResource(swapChain, "startup swap chain");
+            DisposeResource(context, "startup device context");
+            DisposeResource(device, "startup D3D device");
+            throw;
+        }
+
+        _device = device;
+        _context = context;
+        _swapChain = swapChain;
+        _vertexShader = vertexShader;
+        _pixelShader = pixelShader;
+        _sampler = sampler;
+        _settingsBuffer = settingsBuffer;
         _settingsBuffers[0] = _settingsBuffer;
         _invertStrength = Math.Clamp(invertStrength, 0, 100) / 100f;
         _privacyModeEnabled = privacyModeEnabled;
@@ -217,16 +242,28 @@ internal sealed class GpuRenderer : IDisposable
             }
 
             _disposed = true;
-            ReleaseRenderTarget();
-            _captureView?.Dispose();
-            _captureTexture?.Dispose();
-            _settingsBuffer.Dispose();
-            _sampler.Dispose();
-            _pixelShader.Dispose();
-            _vertexShader.Dispose();
-            _swapChain.Dispose();
-            _context.Dispose();
-            _device.Dispose();
+            try
+            {
+                ReleaseRenderTarget();
+                _context.ClearState();
+                _context.Flush();
+            }
+            catch (Exception exception)
+            {
+                AppDiagnostics.WriteException("GPU command cleanup error", exception);
+            }
+
+            DisposeResource(_renderTarget, "render target");
+            _renderTarget = null;
+            DisposeResource(_captureView, "capture view");
+            DisposeResource(_captureTexture, "capture texture");
+            DisposeResource(_settingsBuffer, "settings buffer");
+            DisposeResource(_sampler, "sampler");
+            DisposeResource(_pixelShader, "pixel shader");
+            DisposeResource(_vertexShader, "vertex shader");
+            DisposeResource(_swapChain, "swap chain");
+            DisposeResource(_context, "device context");
+            DisposeResource(_device, "D3D device");
         }
     }
 
@@ -242,12 +279,27 @@ internal sealed class GpuRenderer : IDisposable
             device = D3D11CreateDevice(DriverType.Warp, DeviceCreationFlags.BgraSupport);
         }
 
+        try
+        {
+            using var dxgiDevice = device.QueryInterface<IDXGIDevice1>();
+            dxgiDevice.SetMaximumFrameLatency(1).CheckError();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteStatus(
+                $"DXGI frame-latency limit unavailable: {exception.GetType().Name}: {exception.Message}");
+        }
+
         return (device, device.ImmediateContext);
     }
 
-    private IDXGISwapChain1 CreateSwapChain(int width, int height)
+    private static IDXGISwapChain1 CreateSwapChain(
+        ID3D11Device device,
+        nint overlayHandle,
+        int width,
+        int height)
     {
-        using var dxgiDevice = _device.QueryInterface<IDXGIDevice>();
+        using var dxgiDevice = device.QueryInterface<IDXGIDevice>();
         dxgiDevice.GetAdapter(out var adapter).CheckError();
         using (adapter)
         {
@@ -258,28 +310,42 @@ internal sealed class GpuRenderer : IDisposable
             }
             using (factory)
             {
-            var description = new SwapChainDescription1
-            {
-                Width = (uint)Math.Max(1, width),
-                Height = (uint)Math.Max(1, height),
-                Format = Format.B8G8R8A8_UNorm,
-                Stereo = false,
-                SampleDescription = new SampleDescription(1, 0),
-                BufferUsage = Usage.RenderTargetOutput,
-                BufferCount = 2,
-                Scaling = Scaling.Stretch,
-                SwapEffect = SwapEffect.FlipDiscard,
-                AlphaMode = AlphaMode.Ignore,
-                Flags = SwapChainFlags.None
-            };
-            var swapChain = factory.CreateSwapChainForHwnd(_device, _overlayHandle, description);
-            factory.MakeWindowAssociation(_overlayHandle, WindowAssociationFlags.IgnoreAltEnter).CheckError();
-            return swapChain;
+                var description = new SwapChainDescription1
+                {
+                    Width = (uint)Math.Max(1, width),
+                    Height = (uint)Math.Max(1, height),
+                    Format = Format.B8G8R8A8_UNorm,
+                    Stereo = false,
+                    SampleDescription = new SampleDescription(1, 0),
+                    BufferUsage = Usage.RenderTargetOutput,
+                    BufferCount = 2,
+                    Scaling = Scaling.Stretch,
+                    SwapEffect = SwapEffect.FlipDiscard,
+                    AlphaMode = AlphaMode.Ignore,
+                    Flags = SwapChainFlags.None
+                };
+                var swapChain = factory.CreateSwapChainForHwnd(
+                    device,
+                    overlayHandle,
+                    description);
+                try
+                {
+                    factory.MakeWindowAssociation(
+                        overlayHandle,
+                        WindowAssociationFlags.IgnoreAltEnter).CheckError();
+                    return swapChain;
+                }
+                catch
+                {
+                    DisposeResource(swapChain, "partially initialized swap chain");
+                    throw;
+                }
             }
         }
     }
 
-    private unsafe (ID3D11VertexShader Vertex, ID3D11PixelShader Pixel) CreateShaders()
+    private static unsafe (ID3D11VertexShader Vertex, ID3D11PixelShader Pixel) CreateShaders(
+        ID3D11Device device)
     {
         const string shaderSource = """
             Texture2D CapturedTexture : register(t0);
@@ -341,20 +407,17 @@ internal sealed class GpuRenderer : IDisposable
                     }
                 }
 
-                float2 outputSize = float2(OutputWidth, OutputHeight);
-                float cornerRadius = BorderThickness * 5.0;
-                float2 roundedDistance = abs(input.Position.xy - outputSize * 0.5) -
-                    (outputSize * 0.5 - cornerRadius);
-                float signedDistance = length(max(roundedDistance, 0.0)) +
-                    min(max(roundedDistance.x, roundedDistance.y), 0.0) -
-                    cornerRadius;
                 float cornerBlockSize = BorderThickness * 6.0;
+                bool isBorder = input.Position.x < BorderThickness ||
+                    input.Position.x > OutputWidth - BorderThickness ||
+                    input.Position.y < BorderThickness ||
+                    input.Position.y > OutputHeight - BorderThickness;
                 bool isCornerBlock =
                     (input.Position.x < cornerBlockSize ||
                         input.Position.x > OutputWidth - cornerBlockSize) &&
                     (input.Position.y < cornerBlockSize ||
                         input.Position.y > OutputHeight - cornerBlockSize);
-                if (isCornerBlock || signedDistance > -BorderThickness)
+                if (isBorder || isCornerBlock)
                 {
                     color = float3(0.025, 0.028, 0.032);
                 }
@@ -368,9 +431,17 @@ internal sealed class GpuRenderer : IDisposable
         fixed (byte* vertexPointer = vertexBytes)
         fixed (byte* pixelPointer = pixelBytes)
         {
-            var vertexShader = _device.CreateVertexShader(vertexPointer, (nuint)vertexBytes.Length, null);
-            var pixelShader = _device.CreatePixelShader(pixelPointer, (nuint)pixelBytes.Length, null);
-            return (vertexShader, pixelShader);
+            var vertexShader = device.CreateVertexShader(vertexPointer, (nuint)vertexBytes.Length, null);
+            try
+            {
+                var pixelShader = device.CreatePixelShader(pixelPointer, (nuint)pixelBytes.Length, null);
+                return (vertexShader, pixelShader);
+            }
+            catch
+            {
+                DisposeResource(vertexShader, "partially initialized vertex shader");
+                throw;
+            }
         }
     }
 
@@ -534,6 +605,18 @@ internal sealed class GpuRenderer : IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private static void DisposeResource(IDisposable? resource, string name)
+    {
+        try
+        {
+            resource?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            AppDiagnostics.WriteException($"GPU {name} disposal error", exception);
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]

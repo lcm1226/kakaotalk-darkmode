@@ -10,9 +10,11 @@ internal static class NativeMethods
     internal const int WmHotKey = 0x0312;
     internal const int HtTransparent = -1;
     internal const int GwlpHwndParent = -8;
+    internal const uint GaRootOwner = 3;
     internal const int SwHide = 0;
     internal const int SwShowNoActivate = 4;
     internal const int WsPopup = unchecked((int)0x80000000);
+    internal const int WsDisabled = 0x08000000;
     internal const int WsExTransparent = 0x00000020;
     internal const int WsExToolWindow = 0x00000080;
     internal const int WsExLayered = 0x00080000;
@@ -23,6 +25,7 @@ internal static class NativeMethods
     internal const uint SwpShowWindow = 0x0040;
     internal const uint WdaExcludeFromCapture = 0x00000011;
     internal const uint ModControl = 0x0002;
+    internal const uint ModShift = 0x0004;
     internal const uint ModNoRepeat = 0x4000;
     private const uint DwmwaExtendedFrameBounds = 9;
 
@@ -87,6 +90,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool IsWindowEnabled(nint hwnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool IsIconic(nint hwnd);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -94,6 +101,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    internal static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    internal static extern nint GetAncestor(nint hwnd, uint flags);
 
     [DllImport("user32.dll")]
     internal static extern nint SetWinEventHook(

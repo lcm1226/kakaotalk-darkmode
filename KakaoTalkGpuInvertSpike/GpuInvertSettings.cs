@@ -13,6 +13,8 @@ internal sealed class GpuInvertSettings
 
     public bool PrivacyModeEnabled { get; set; }
 
+    public bool AutoPrivacyEnabled { get; set; }
+
     public int InvertStrength { get; set; } = 100;
 
     public bool ShowStrengthControl { get; set; } = true;

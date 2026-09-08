@@ -36,6 +36,7 @@ internal sealed class GpuRenderer : IDisposable
     private int _captureHeight;
     private int _outputWidth;
     private int _outputHeight;
+    private float _textureHeightRatio = 1;
     private float _invertStrength;
     private bool _privacyModeEnabled;
     private float _dpiScale;
@@ -50,7 +51,8 @@ internal sealed class GpuRenderer : IDisposable
         int height,
         int invertStrength,
         bool privacyModeEnabled,
-        float dpiScale)
+        float dpiScale,
+        int sourceHeight = 0)
     {
         var (device, context) = CreateDevice();
         IDXGISwapChain1? swapChain = null;
@@ -103,7 +105,7 @@ internal sealed class GpuRenderer : IDisposable
         _invertStrength = Math.Clamp(invertStrength, 0, 100) / 100f;
         _privacyModeEnabled = privacyModeEnabled;
         _dpiScale = Math.Clamp(dpiScale, 0.5f, 4f);
-        ResizeOutput(width, height);
+        ResizeOutput(width, height, sourceHeight);
     }
 
     public IDirect3DDevice CreateWinRtDevice()
@@ -133,13 +135,19 @@ internal sealed class GpuRenderer : IDisposable
         }
     }
 
-    public void ResizeOutput(int width, int height)
+    public void ResizeOutput(int width, int height, int sourceHeight = 0)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
         lock (_sync)
         {
             ThrowIfDisposed();
+            var ratio = Math.Clamp(height / (float)Math.Max(height, sourceHeight), 0, 1);
+            if (_textureHeightRatio != ratio)
+            {
+                _textureHeightRatio = ratio;
+                _settingsDirty = true;
+            }
             if (_renderTarget is not null && _outputWidth == width && _outputHeight == height)
             {
                 return;
@@ -355,7 +363,7 @@ internal sealed class GpuRenderer : IDisposable
                 float InvertStrength;
                 float PrivacyModeEnabled;
                 float SidebarWidth;
-                float Reserved;
+                float TextureHeightRatio;
                 float TitleButtonsHeight;
                 float OutputWidth;
                 float OutputHeight;
@@ -391,7 +399,8 @@ internal sealed class GpuRenderer : IDisposable
 
             float4 PixelMain(VertexOutput input) : SV_Target
             {
-                float4 source = CapturedTexture.Sample(CapturedSampler, input.TextureCoordinate);
+                float2 uv = float2(input.TextureCoordinate.x, input.TextureCoordinate.y * TextureHeightRatio);
+                float4 source = CapturedTexture.Sample(CapturedSampler, uv);
                 float3 color = lerp(source.rgb, 1.0 - source.rgb, saturate(InvertStrength));
                 if (PrivacyModeEnabled > 0.5)
                 {
@@ -515,7 +524,7 @@ internal sealed class GpuRenderer : IDisposable
                 InvertStrength = _invertStrength,
                 PrivacyModeEnabled = _privacyModeEnabled ? 1 : 0,
                 SidebarWidth = SidebarVisibleWidth * _dpiScale,
-                Reserved = 0,
+                TextureHeightRatio = _textureHeightRatio,
                 TitleButtonsHeight = TitleButtonsVisibleHeight * _dpiScale,
                 OutputWidth = _outputWidth,
                 OutputHeight = _outputHeight,
@@ -621,7 +630,7 @@ internal sealed class GpuRenderer : IDisposable
         public float InvertStrength;
         public float PrivacyModeEnabled;
         public float SidebarWidth;
-        public float Reserved;
+        public float TextureHeightRatio;
         public float TitleButtonsHeight;
         public float OutputWidth;
         public float OutputHeight;

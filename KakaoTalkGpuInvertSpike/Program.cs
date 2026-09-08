@@ -176,6 +176,11 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private readonly RegisteredWaitHandle _instanceRefreshRegistration;
     private readonly OverlayWindow _overlay = new();
     private readonly PrivacyMaskOverlay _privacyMask = new();
+    private readonly WindowRegionCut _bottomCut = new(clipNonClientFrame: true);
+    private readonly AdvertisementWindowCut _advertisementCut = new();
+    private readonly ZoneCutAlignment _zoneAlignment = new();
+    private readonly BottomResizeGrip _resizeGrip;
+    private int _bottomCutPixels = 125;
     private readonly WindowEventMonitor _windowEventMonitor;
     private StrengthSliderForm _strengthSlider;
     private readonly Control _uiDispatcher = new();
@@ -215,6 +220,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _privacyModeEnabled = settings.PrivacyModeEnabled;
         _autoPrivacyEnabled = settings.AutoPrivacyEnabled;
         _invertStrength = Math.Clamp(settings.InvertStrength, 0, 100);
+        _bottomCutPixels = Math.Clamp(settings.BottomCutPixels, 0, 10000);
         _showStrengthControl = settings.ShowStrengthControl;
         _uiDispatcher.CreateControl();
         _windowEventTimer = new System.Windows.Forms.Timer
@@ -230,6 +236,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _peekTimer = new System.Windows.Forms.Timer { Interval = PeekDurationMs };
         _peekTimer.Tick += (_, _) => EndPeek(true);
         _strengthSlider = CreateStrengthSlider();
+        _resizeGrip = new BottomResizeGrip(Refresh);
         _overlay.PrivacyHotKeyPressed += TogglePrivacyMode;
         _overlay.PeekHotKeyPressed += TogglePeek;
         _overlay.StrengthControlHotKeyPressed += ShowStrengthControlFromHotKey;
@@ -286,9 +293,14 @@ internal sealed class GpuInvertApplication : ApplicationContext
                 PrivacyModeEnabled = _privacyModeEnabled,
                 AutoPrivacyEnabled = _autoPrivacyEnabled,
                 InvertStrength = _invertStrength,
+                BottomCutPixels = _bottomCutPixels,
                 ShowStrengthControl = _showStrengthControl
             });
             DisposePipeline();
+            _resizeGrip.Dispose();
+            _zoneAlignment.Dispose();
+            _advertisementCut.Dispose();
+            _bottomCut.Dispose();
             _privacyMask.Dispose();
             _strengthSlider.Dispose();
             _uiDispatcher.Dispose();
@@ -456,6 +468,9 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _privacyMask.Hide();
             _strengthSlider.Hide();
             EndPeek(false);
+            _bottomCut.Dispose();
+            _advertisementCut.Dispose();
+            _resizeGrip.Hide();
             SetStatus("Waiting for KakaoTalk");
             return;
         }
@@ -474,6 +489,16 @@ internal sealed class GpuInvertApplication : ApplicationContext
             EndPeek(false);
         }
 
+        target = _zoneAlignment.Apply(target.Value, _bottomCutPixels,
+            _resizeGrip.IsDragging, _windowEventMonitor.IsMoveSizeActive);
+        _bottomCut.Apply(target.Value, _bottomCutPixels);
+        _advertisementCut.Apply(target.Value, _bottomCutPixels);
+        // WGC captures the main HWND, not its owned advertisement popup. Do not
+        // paint the main window's empty background over the restored advertisement.
+        _overlay.BottomCutPixels = _advertisementCut.AdvertisementTop is int advertisementTop
+            ? Math.Max(_bottomCutPixels, target.Value.Y + target.Value.Height - advertisementTop)
+            : _bottomCutPixels;
+        _privacyMask.BottomCutPixels = _bottomCutPixels;
         var effectivePrivacy = GetEffectivePrivacy(targetFocused);
         var dpiScale = GetDpiScale(target.Value.Handle);
         _strengthSlider.SetPeekActive(_peekActive);
@@ -526,7 +551,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
         try
         {
             _capture.SetRenderingEnabled(true);
-            _renderer.ResizeOutput(target.Value.Width, target.Value.Height);
+            _renderer.ResizeOutput(target.Value.Width,
+                WindowRegionCut.VisibleHeight(target.Value.Height, _overlay.BottomCutPixels), target.Value.Height);
             _renderer.UpdateSettings(
                 _invertStrength,
                 effectivePrivacy,
@@ -572,10 +598,10 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _renderer = new GpuRenderer(
                 _overlay.Handle,
                 target.Width,
-                target.Height,
+                WindowRegionCut.VisibleHeight(target.Height, _overlay.BottomCutPixels),
                 _invertStrength,
                 effectivePrivacy,
-                GetDpiScale(target.Handle));
+                GetDpiScale(target.Handle), target.Height);
             _targetHandle = target.Handle;
             _capture = new WgcCaptureSession(
                 _renderer,
@@ -1003,6 +1029,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void UpdateStrengthControl(TargetWindow target)
     {
+        _resizeGrip.Position(target, _bottomCutPixels);
         if (_showStrengthControl)
         {
             _strengthSlider.ShowNear(target);
@@ -1090,7 +1117,24 @@ internal sealed class GpuInvertApplication : ApplicationContext
             SetPrivacyMode,
             SetAutoPrivacy,
             TogglePeekFromControl,
-            () => SetStrengthControlVisible(false));
+            () => SetStrengthControlVisible(false),
+            _bottomCutPixels,
+            SetBottomCutPixels);
+    }
+
+    private void SetBottomCutPixels(int pixels)
+    {
+        _bottomCutPixels = Math.Clamp(pixels, 0, 10000);
+        GpuInvertSettings.Save(new GpuInvertSettings
+        {
+            Enabled = _enabled,
+            PrivacyModeEnabled = _privacyModeEnabled,
+            AutoPrivacyEnabled = _autoPrivacyEnabled,
+            InvertStrength = _invertStrength,
+            ShowStrengthControl = _showStrengthControl,
+            BottomCutPixels = _bottomCutPixels
+        });
+        Refresh();
     }
 
     private void EnsureStrengthSlider()

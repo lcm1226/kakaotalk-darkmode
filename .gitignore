@@ -6,6 +6,8 @@ KakaoTalkDarkLite/obj/
 KakaoTalkGpuInvertSpike/bin/
 KakaoTalkGpuInvertSpike/obj/
 captures/
+CutVerification/bin/
+CutVerification/obj/
 
 # Local experiments and rollback snapshots
 KakaoTalkMagnifierTest/

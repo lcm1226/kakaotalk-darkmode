@@ -5,6 +5,7 @@ internal sealed class PrivacyMaskOverlay : IDisposable
     private const float SidebarVisibleWidth = 78;
     private const float TitleButtonsVisibleHeight = 38;
     private readonly PrivacyMaskForm _contentMask = new();
+    public int BottomCutPixels { get; set; }
 
     public void Position(TargetWindow target, float dpiScale, bool show)
     {
@@ -30,7 +31,7 @@ internal sealed class PrivacyMaskOverlay : IDisposable
                 target.X + sidebarWidth,
                 target.Y + titleHeight,
                 Math.Max(0, target.Width - sidebarWidth),
-                Math.Max(0, target.Height - titleHeight)));
+                Math.Max(0, WindowRegionCut.VisibleHeight(target.Height, BottomCutPixels) - titleHeight)));
     }
 
     public void Hide()

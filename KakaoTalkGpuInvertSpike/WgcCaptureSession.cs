@@ -26,6 +26,19 @@ internal interface IDirect3DDxgiInterfaceAccess
     nint GetInterface(in Guid iid);
 }
 
+// IInspectable slots precede the session3 properties. WinRT boolean is one byte.
+[ComImport]
+[Guid("F2CDD966-22AE-5EA1-9596-3A289344C3BE")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IGraphicsCaptureSession3
+{
+    void GetIids(out uint count, out nint ids);
+    void GetRuntimeClassName(out nint name);
+    void GetTrustLevel(out int level);
+    [PreserveSig] int GetIsBorderRequired(out byte value);
+    [PreserveSig] int SetIsBorderRequired(byte value);
+}
+
 internal sealed class WgcCaptureSession : IDisposable
 {
     private const int MaximumRenderFramesPerSecond = 30;
@@ -349,11 +362,21 @@ internal sealed class WgcCaptureSession : IDisposable
     {
         try
         {
-            session.GetType().GetProperty("IsBorderRequired")?.SetValue(session, false);
+            if (!Windows.Foundation.Metadata.ApiInformation.IsPropertyPresent(
+                    "Windows.Graphics.Capture.GraphicsCaptureSession", "IsBorderRequired"))
+            {
+                AppDiagnostics.WriteStatus("Capture border control is unavailable on this Windows version");
+                return;
+            }
+            // The 19041 projection has no IsBorderRequired property, even on newer Windows.
+            var borderSession = session.As<IGraphicsCaptureSession3>();
+            Marshal.ThrowExceptionForHR(borderSession.SetIsBorderRequired(0));
+            Marshal.ThrowExceptionForHR(borderSession.GetIsBorderRequired(out var required));
+            AppDiagnostics.WriteStatus($"Capture border requested off | Required={required != 0}");
         }
-        catch
+        catch (Exception exception)
         {
-            // Older Windows versions may keep the system capture border.
+            AppDiagnostics.WriteStatus($"Capture border control unavailable: {exception.Message}");
         }
     }
 

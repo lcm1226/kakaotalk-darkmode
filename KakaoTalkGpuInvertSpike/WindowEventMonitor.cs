@@ -20,6 +20,7 @@ internal sealed class WindowEventMonitor : IDisposable
     private uint _processId;
     private nint _targetHandle;
     private volatile bool _disposed;
+    public bool IsMoveSizeActive { get; private set; }
 
     public WindowEventMonitor(Action windowChanged, Action foregroundChanged)
     {
@@ -53,6 +54,7 @@ internal sealed class WindowEventMonitor : IDisposable
 
     public void Detach()
     {
+        IsMoveSizeActive = false;
         _processId = 0;
         Interlocked.Exchange(ref _targetHandle, nint.Zero);
         foreach (var hook in _hooks)
@@ -114,6 +116,8 @@ internal sealed class WindowEventMonitor : IDisposable
         {
             return;
         }
+        if (eventType == EventSystemMoveSizeStart) IsMoveSizeActive = true;
+        if (eventType == EventSystemMoveSizeEnd) IsMoveSizeActive = false;
 
         if (eventType >= EventObjectDestroy && (objectId != ObjectIdWindow || childId != 0))
         {

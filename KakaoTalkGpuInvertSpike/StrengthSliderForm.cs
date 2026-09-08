@@ -13,6 +13,7 @@ internal sealed class StrengthSliderForm : Form
     private readonly DarkPeekButton _peekButton;
     private readonly DarkStrengthSlider _slider;
     private readonly ToolTip _toolTip = new();
+    private readonly System.Windows.Forms.Timer _cutCommitTimer = new() { Interval = 250 };
     private readonly Action<int> _strengthChanged;
     private readonly Action<bool> _enabledChanged;
     private readonly Action<bool> _privacyModeChanged;
@@ -36,7 +37,9 @@ internal sealed class StrengthSliderForm : Form
         Action<bool> privacyModeChanged,
         Action<bool> autoPrivacyChanged,
         Action peekRequested,
-        Action hideRequested)
+        Action hideRequested,
+        int bottomCutPixels = 125,
+        Action<int>? bottomCutChanged = null)
     {
         _strengthChanged = strengthChanged;
         _enabledChanged = enabledChanged;
@@ -45,7 +48,7 @@ internal sealed class StrengthSliderForm : Form
         _peekRequested = peekRequested;
         _hideRequested = hideRequested;
         Text = "GPU invert strength";
-        ClientSize = new Size(281, 40);
+        ClientSize = new Size(411, 40);
         FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -112,11 +115,64 @@ internal sealed class StrengthSliderForm : Form
             }
         };
 
+        var cutLabel = new Label
+        {
+            Text = "Cut", Location = new Point(225, 2), Size = new Size(32, 20),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        var cutInput = new NumericUpDown
+        {
+            AccessibleName = "Bottom cut in physical pixels",
+            Minimum = 0, Maximum = 10000,
+            Value = Math.Clamp(bottomCutPixels, 0, 10000),
+            Location = new Point(257, 2), Size = new Size(62, 20),
+            BackColor = PanelBackground, ForeColor = PrimaryText,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        var lastCut = (int)cutInput.Value;
+        cutInput.ValueChanged += (_, _) =>
+        {
+            var value = (int)cutInput.Value;
+            if (lastCut == value) return;
+            lastCut = value;
+            bottomCutChanged?.Invoke(value);
+        };
+        cutInput.TextChanged += (_, _) =>
+        {
+            _cutCommitTimer.Stop();
+            _cutCommitTimer.Start();
+        };
+        _cutCommitTimer.Tick += (_, _) =>
+        {
+            _cutCommitTimer.Stop();
+            if (!int.TryParse(cutInput.Text, out var value) ||
+                value < cutInput.Minimum || value > cutInput.Maximum) return;
+            var editor = cutInput.Controls.OfType<TextBox>().FirstOrDefault();
+            var start = editor?.SelectionStart ?? 0;
+            var length = editor?.SelectionLength ?? 0;
+            cutInput.Value = value;
+            if (editor is not null)
+            {
+                editor.SelectionStart = Math.Min(start, editor.TextLength);
+                editor.SelectionLength = Math.Min(length, editor.TextLength - editor.SelectionStart);
+            }
+            _cutCommitTimer.Stop();
+        };
+        var pixelsLabel = new Label
+        {
+            Text = "px", Location = new Point(323, 2), Size = new Size(26, 20),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _toolTip.SetToolTip(cutInput, "Cut the bottom of the main window; 0 restores it");
+        Controls.Add(cutLabel);
+        Controls.Add(cutInput);
+        Controls.Add(pixelsLabel);
+
         _peekButton = new DarkPeekButton
         {
             AccessibleName = "Focus reveal for 8 seconds",
             BackColor = PanelBackground,
-            Location = new Point(226, 2),
+            Location = new Point(356, 2),
             Size = new Size(26, 20),
             TabStop = false
         };
@@ -130,7 +186,7 @@ internal sealed class StrengthSliderForm : Form
             ForeColor = PrimaryText,
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 8, FontStyle.Bold),
-            Location = new Point(254, 1),
+            Location = new Point(384, 1),
             Padding = Padding.Empty,
             Size = new Size(21, 20),
             TabStop = false,
@@ -151,7 +207,7 @@ internal sealed class StrengthSliderForm : Form
             LargeChange = 10,
             Value = Math.Clamp(strength, 0, 100),
             Location = new Point(6, 22),
-            Size = new Size(269, 18),
+            Size = new Size(399, 18),
             BackColor = PanelBackground,
             Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
@@ -267,7 +323,7 @@ internal sealed class StrengthSliderForm : Form
             target.X,
             workingArea.Left + EdgePadding,
             Math.Max(workingArea.Left + EdgePadding, workingArea.Right - Width - EdgePadding));
-        var top = target.Y - Height - EdgePadding;
+        var top = target.Y - Height;
         if (top < workingArea.Top + EdgePadding)
         {
             top = target.Y + EdgePadding;
@@ -358,6 +414,7 @@ internal sealed class StrengthSliderForm : Form
         if (disposing)
         {
             _toolTip.Dispose();
+            _cutCommitTimer.Dispose();
         }
 
         base.Dispose(disposing);

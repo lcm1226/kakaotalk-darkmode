@@ -25,6 +25,7 @@ internal sealed class OverlayWindow : IDisposable
     private bool _strengthControlHotKeyRegistered;
     private TargetWindow? _lastTarget;
     private bool _inputPassThroughVerified;
+    public int BottomCutPixels { get; set; }
 
     public event Action? PrivacyHotKeyPressed;
 
@@ -47,6 +48,7 @@ internal sealed class OverlayWindow : IDisposable
 
     public void Position(TargetWindow target, bool show)
     {
+        target = target with { Height = WindowRegionCut.VisibleHeight(target.Height, BottomCutPixels) };
         EnsureCreated();
         var ownerChanged = _owner != target.Handle;
         if (ownerChanged)

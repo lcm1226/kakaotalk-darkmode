@@ -17,6 +17,8 @@ internal sealed class GpuInvertSettings
 
     public int InvertStrength { get; set; } = 100;
 
+    public int BottomCutPixels { get; set; } = 125;
+
     public bool ShowStrengthControl { get; set; } = true;
 
     public static GpuInvertSettings Load()

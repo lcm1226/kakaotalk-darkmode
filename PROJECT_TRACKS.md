@@ -29,7 +29,7 @@ privacy, Focus Reveal (`Ctrl+Shift+H`), and strength-control display (`Ctrl+B`).
 The three hotkeys are registered only while a KakaoTalk process window or the
 compact control has foreground focus, so they remain available to unrelated apps. A
 left-button double-click on the tray icon also displays the compact control.
-The 281x40 compact control exposes
+The 411x40 compact control exposes
 synchronized GPU invert, Privacy, and Auto checkboxes, a Focus Reveal eye
 button, a 0-100% slider, and a close button. Focus Reveal temporarily removes
 Full privacy for eight seconds and then locks the content again. Auto privacy
@@ -37,6 +37,45 @@ masks content whenever KakaoTalk loses foreground focus. Disabling GPU invert
 pauses GPU rendering and hides the capture overlay without disabling privacy.
 Close requests hide the compact control instead of disposing it, and the
 application recreates the control if an external window message disposes it.
+The `Cut` numeric input after Auto clips physical pixels from the main window's
+bottom edge (default 125, zero restores the original region). It saves each
+committed value immediately as `BottomCutPixels`; valid typed values commit after
+250 ms without requiring Enter or focus loss. A native region clips the main
+window without changing its layout. Its DWM non-client rendering is disabled
+while cut is active to prevent a white surface in the removed area, and restored
+when cut is removed. The GPU window and output buffer use the visible height,
+with texture coordinates preserving the original content scale. The privacy
+fallback ends at the same boundary. KakaoTalk's bottom advertisement is
+an owned top-level WebView popup, so its region is clipped separately to the
+same screen boundary (including an empty region for a fully removed ad).
+Detection requires direct main-window ownership, the same process, an empty
+title, bounds contained in the lower half of the main window, and a Chromium
+render child. Descendant surfaces crossing the bottom boundary are clipped too.
+Detached conversation windows are not included. Normal exit and target changes
+restore the original regions. Forced process termination cannot run restoration;
+restart KakaoTalk if its window remains clipped after an abnormal exit.
+`CutVerification` exercises native region boundaries, restoration, resizing,
+settings serialization, and the input callback without focusing visible apps.
+Its optional live test checks WGC and background hit testing, with a bounded
+foreground announcement and restoration. Live validation must stop when OS
+foreground ownership cannot be confirmed.
+Capture border suppression uses the runtime session3 interface rather than
+reflection on the 19041 projection, which does not expose IsBorderRequired.
+Support and the returned border requirement are logged; Windows may still
+require consent or display a border requested by another capture session.
+The compact control sits flush against the main window with no vertical gap.
+A four-DIP input strip just inside the visible bottom edge resizes the actual
+main window while keeping Cut unchanged. It is owned by the main window and
+does not repeatedly raise itself above unrelated applications.
+When FancyZones marks the main window with `FancyZones_zones` or
+`FancyZones_zones_max128`, native height receives one hidden-tail allowance so
+the visible bottom matches the zone. Window properties track the base/applied
+heights to avoid accumulated expansion across refreshes. Manual resizing updates
+the baseline; zero Cut and normal shutdown restore the uncompensated zone height.
+This is placement compensation, not a change to Windows' definition of HWND bounds.
+The installed single-file build is named `KakaoDark.exe`; the singleton and
+settings location remain unchanged. The old startup executable and obsolete
+`kakao_crop` script are backed up outside their operating paths.
 Settings are stored on graceful exit in
 `%LOCALAPPDATA%\KakaoTalkGpuInvertSpike\settings.json`.
 

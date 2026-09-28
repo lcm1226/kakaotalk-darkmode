@@ -39,6 +39,7 @@ internal sealed class GpuRenderer : IDisposable
     private float _textureHeightRatio = 1;
     private float _invertStrength;
     private bool _privacyModeEnabled;
+    private int _visibleStatusWidth;
     private float _dpiScale;
     private bool _settingsDirty = true;
     private readonly string? _diagnosticCapturePath = Environment.GetEnvironmentVariable("KAKAOTALK_GPU_CAPTURE_PATH");
@@ -52,7 +53,8 @@ internal sealed class GpuRenderer : IDisposable
         int invertStrength,
         bool privacyModeEnabled,
         float dpiScale,
-        int sourceHeight = 0)
+        int sourceHeight = 0,
+        int visibleStatusWidth = 0)
     {
         var (device, context) = CreateDevice();
         IDXGISwapChain1? swapChain = null;
@@ -104,6 +106,7 @@ internal sealed class GpuRenderer : IDisposable
         _settingsBuffers[0] = _settingsBuffer;
         _invertStrength = Math.Clamp(invertStrength, 0, 100) / 100f;
         _privacyModeEnabled = privacyModeEnabled;
+        _visibleStatusWidth = Math.Max(0, visibleStatusWidth);
         _dpiScale = Math.Clamp(dpiScale, 0.5f, 4f);
         ResizeOutput(width, height, sourceHeight);
     }
@@ -171,7 +174,7 @@ internal sealed class GpuRenderer : IDisposable
         }
     }
 
-    public void UpdateSettings(int invertStrength, bool privacyModeEnabled, float dpiScale)
+    public void UpdateSettings(int invertStrength, bool privacyModeEnabled, float dpiScale, int visibleStatusWidth = 0)
     {
         var normalizedStrength = Math.Clamp(invertStrength, 0, 100) / 100f;
         var normalizedDpiScale = Math.Clamp(dpiScale, 0.5f, 4f);
@@ -180,6 +183,7 @@ internal sealed class GpuRenderer : IDisposable
             ThrowIfDisposed();
             if (Math.Abs(_invertStrength - normalizedStrength) < 0.0001f &&
                 _privacyModeEnabled == privacyModeEnabled &&
+                _visibleStatusWidth == Math.Max(0, visibleStatusWidth) &&
                 Math.Abs(_dpiScale - normalizedDpiScale) < 0.0001f)
             {
                 return;
@@ -187,6 +191,7 @@ internal sealed class GpuRenderer : IDisposable
 
             _invertStrength = normalizedStrength;
             _privacyModeEnabled = privacyModeEnabled;
+            _visibleStatusWidth = Math.Max(0, visibleStatusWidth);
             _dpiScale = normalizedDpiScale;
             _settingsDirty = true;
             if (_captureTexture is not null && _renderTarget is not null)
@@ -368,6 +373,8 @@ internal sealed class GpuRenderer : IDisposable
                 float OutputWidth;
                 float OutputHeight;
                 float BorderThickness;
+                float VisibleStatusWidth;
+                float3 PrivacyPadding;
             };
 
             struct VertexOutput
@@ -405,7 +412,8 @@ internal sealed class GpuRenderer : IDisposable
                 if (PrivacyModeEnabled > 0.5)
                 {
                     bool coversBody = input.Position.x >= SidebarWidth &&
-                        input.Position.y >= TitleButtonsHeight;
+                        input.Position.y >= TitleButtonsHeight &&
+                        input.Position.x < OutputWidth - VisibleStatusWidth;
                     if (coversBody)
                     {
                         color = 0.0;
@@ -523,12 +531,13 @@ internal sealed class GpuRenderer : IDisposable
             {
                 InvertStrength = _invertStrength,
                 PrivacyModeEnabled = _privacyModeEnabled ? 1 : 0,
-                SidebarWidth = SidebarVisibleWidth * _dpiScale,
+                SidebarWidth = (float)Math.Round(SidebarVisibleWidth * _dpiScale),
                 TextureHeightRatio = _textureHeightRatio,
-                TitleButtonsHeight = TitleButtonsVisibleHeight * _dpiScale,
+                TitleButtonsHeight = (float)Math.Round(TitleButtonsVisibleHeight * _dpiScale),
                 OutputWidth = _outputWidth,
                 OutputHeight = _outputHeight,
-                BorderThickness = Math.Clamp(1.5f * _dpiScale, 2, 4)
+                BorderThickness = Math.Clamp(1.5f * _dpiScale, 2, 4),
+                VisibleStatusWidth = _visibleStatusWidth
             };
         }
         finally
@@ -635,6 +644,8 @@ internal sealed class GpuRenderer : IDisposable
         public float OutputWidth;
         public float OutputHeight;
         public float BorderThickness;
+        public float VisibleStatusWidth;
+        public float Padding0, Padding1, Padding2;
     }
 
     [DllImport("d3d11.dll")]

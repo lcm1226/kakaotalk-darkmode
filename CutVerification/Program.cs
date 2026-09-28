@@ -278,6 +278,7 @@ internal static class Program
             }
             bitmap.Save(Path.Combine(output, "control-render.png"));
             Check(!source.Visible && !control.Visible, "verification did not show or focus windows", checks);
+            PrivacyVerification.Run(output, checks);
             File.WriteAllLines(Path.Combine(output, "headless-checks.txt"), checks);
             Console.WriteLine(string.Join(Environment.NewLine, checks));
             return 0;

@@ -6,6 +6,7 @@ internal sealed class PrivacyMaskOverlay : IDisposable
     private const float TitleButtonsVisibleHeight = 38;
     private readonly PrivacyMaskForm _contentMask = new();
     public int BottomCutPixels { get; set; }
+    public int VisibleStatusWidth { get; set; }
 
     public void Position(TargetWindow target, float dpiScale, bool show)
     {
@@ -15,6 +16,11 @@ internal sealed class PrivacyMaskOverlay : IDisposable
             return;
         }
 
+        _contentMask.Position(target.Handle, CalculateBounds(target, dpiScale, BottomCutPixels, VisibleStatusWidth));
+    }
+
+    internal static Rectangle CalculateBounds(TargetWindow target, float dpiScale, int bottomCutPixels, int visibleStatusWidth)
+    {
         dpiScale = Math.Clamp(dpiScale, 0.5f, 4f);
         var sidebarWidth = Math.Clamp(
             (int)Math.Round(SidebarVisibleWidth * dpiScale),
@@ -25,13 +31,11 @@ internal sealed class PrivacyMaskOverlay : IDisposable
             0,
             target.Height);
 
-        _contentMask.Position(
-            target.Handle,
-            new Rectangle(
+        return new Rectangle(
                 target.X + sidebarWidth,
                 target.Y + titleHeight,
-                Math.Max(0, target.Width - sidebarWidth),
-                Math.Max(0, WindowRegionCut.VisibleHeight(target.Height, BottomCutPixels) - titleHeight)));
+                Math.Max(0, target.Width - sidebarWidth - Math.Max(0, visibleStatusWidth)),
+                Math.Max(0, WindowRegionCut.VisibleHeight(target.Height, bottomCutPixels) - titleHeight));
     }
 
     public void Hide()

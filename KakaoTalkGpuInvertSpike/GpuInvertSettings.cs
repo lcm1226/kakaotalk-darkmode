@@ -12,6 +12,11 @@ internal sealed class GpuInvertSettings
     public bool Enabled { get; set; } = true;
 
     public bool PrivacyModeEnabled { get; set; }
+    public int? PrivacyLevel { get; set; }
+
+    public PrivacyMode GetPrivacyMode() => PrivacyLevel is >= 0 and <= 2
+        ? (PrivacyMode)PrivacyLevel.Value
+        : PrivacyModeEnabled ? PrivacyMode.Full : PrivacyMode.Off;
 
     public bool AutoPrivacyEnabled { get; set; }
 

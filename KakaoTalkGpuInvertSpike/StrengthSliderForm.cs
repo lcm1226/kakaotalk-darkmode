@@ -39,7 +39,8 @@ internal sealed class StrengthSliderForm : Form
         Action peekRequested,
         Action hideRequested,
         int bottomCutPixels = 125,
-        Action<int>? bottomCutChanged = null)
+        Action<int>? bottomCutChanged = null,
+        Action? privacyCycleRequested = null)
     {
         _strengthChanged = strengthChanged;
         _enabledChanged = enabledChanged;
@@ -96,6 +97,12 @@ internal sealed class StrengthSliderForm : Form
                 _privacyModeChanged(_privacyModeCheckBox.Checked);
             }
         };
+
+        if (privacyCycleRequested is not null)
+        {
+            _privacyModeCheckBox.AutoCheck = false;
+            _privacyModeCheckBox.Click += (_, _) => privacyCycleRequested();
+        }
 
         _autoPrivacyCheckBox = new DarkCheckBox
         {
@@ -271,6 +278,24 @@ internal sealed class StrengthSliderForm : Form
         {
             _isSynchronizingPrivacyMode = false;
         }
+    }
+
+    public void SetPrivacyLevel(PrivacyMode mode)
+    {
+        _isSynchronizingPrivacyMode = true;
+        try
+        {
+            _privacyModeCheckBox.CheckState = mode switch
+            {
+                PrivacyMode.StatusOnly => CheckState.Indeterminate,
+                PrivacyMode.Full => CheckState.Checked,
+                _ => CheckState.Unchecked
+            };
+            _privacyModeCheckBox.AccessibleDescription = PrivacyPolicy.Label(mode);
+            _privacyModeCheckBox.Invalidate();
+            _toolTip.SetToolTip(_privacyModeCheckBox, PrivacyPolicy.Label(mode));
+        }
+        finally { _isSynchronizingPrivacyMode = false; }
     }
 
     public void SetAutoPrivacy(bool enabled)
@@ -491,7 +516,9 @@ internal sealed class DarkCheckBox : CheckBox
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
             };
-            e.Graphics.DrawLines(
+            if (CheckState == CheckState.Indeterminate)
+                e.Graphics.DrawLine(checkPen, box.Left + 3, box.Top + 7, box.Right - 3, box.Top + 7);
+            else e.Graphics.DrawLines(
                 checkPen,
                 new Point[]
                 {

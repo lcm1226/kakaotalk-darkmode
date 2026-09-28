@@ -195,7 +195,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
     private WgcCaptureSession? _capture;
     private nint _targetHandle;
     private bool _enabled = true;
-    private bool _privacyModeEnabled;
+    private PrivacyMode _privacyLevel;
+    private bool _privacyModeEnabled => _privacyLevel != PrivacyMode.Off;
     private bool _autoPrivacyEnabled;
     private bool _peekActive;
     private nint _peekForegroundAnchor;
@@ -217,7 +218,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
     {
         var settings = GpuInvertSettings.Load();
         _enabled = settings.Enabled;
-        _privacyModeEnabled = settings.PrivacyModeEnabled;
+        _privacyLevel = settings.GetPrivacyMode();
         _autoPrivacyEnabled = settings.AutoPrivacyEnabled;
         _invertStrength = Math.Clamp(settings.InvertStrength, 0, 100);
         _bottomCutPixels = Math.Clamp(settings.BottomCutPixels, 0, 10000);
@@ -291,6 +292,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
             {
                 Enabled = _enabled,
                 PrivacyModeEnabled = _privacyModeEnabled,
+                PrivacyLevel = (int)_privacyLevel,
                 AutoPrivacyEnabled = _autoPrivacyEnabled,
                 InvertStrength = _invertStrength,
                 BottomCutPixels = _bottomCutPixels,
@@ -380,13 +382,12 @@ internal sealed class GpuInvertApplication : ApplicationContext
         };
         _enabledMenuItem.CheckedChanged += (_, _) => SetEnabled(_enabledMenuItem.Checked);
         menu.Items.Add(_enabledMenuItem);
-        _privacyModeMenuItem = new ToolStripMenuItem("Full privacy (Ctrl+H)")
+        _privacyModeMenuItem = new ToolStripMenuItem(PrivacyPolicy.Label(_privacyLevel))
         {
             Checked = _privacyModeEnabled,
-            CheckOnClick = true
+            CheckOnClick = false
         };
-        _privacyModeMenuItem.CheckedChanged += (_, _) =>
-            SetPrivacyMode(_privacyModeMenuItem.Checked);
+        _privacyModeMenuItem.Click += (_, _) => CyclePrivacyMode();
         menu.Items.Add(_privacyModeMenuItem);
         _autoPrivacyMenuItem = new ToolStripMenuItem("Auto privacy when unfocused")
         {
@@ -501,6 +502,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
         _privacyMask.BottomCutPixels = _bottomCutPixels;
         var effectivePrivacy = GetEffectivePrivacy(targetFocused);
         var dpiScale = GetDpiScale(target.Value.Handle);
+        _privacyMask.VisibleStatusWidth = GetVisibleStatusWidth(targetFocused, dpiScale);
         _strengthSlider.SetPeekActive(_peekActive);
 
         if (!_enabled)
@@ -556,7 +558,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _renderer.UpdateSettings(
                 _invertStrength,
                 effectivePrivacy,
-                dpiScale);
+                dpiScale,
+                _privacyMask.VisibleStatusWidth);
             _overlay.Position(target.Value, _capture.HasPresentedFrame);
             if (_capture.HasPresentedFrame)
             {
@@ -601,7 +604,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
                 WindowRegionCut.VisibleHeight(target.Height, _overlay.BottomCutPixels),
                 _invertStrength,
                 effectivePrivacy,
-                GetDpiScale(target.Handle), target.Height);
+                GetDpiScale(target.Handle), target.Height, _privacyMask.VisibleStatusWidth);
             _targetHandle = target.Handle;
             _capture = new WgcCaptureSession(
                 _renderer,
@@ -709,7 +712,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
                     _renderer?.UpdateSettings(
                         _invertStrength,
                         GetEffectivePrivacy(targetFocused),
-                        GetDpiScale(target.Handle));
+                        GetDpiScale(target.Handle),
+                        GetVisibleStatusWidth(targetFocused, GetDpiScale(target.Handle)));
                     _overlay.Position(target, true);
                     _privacyMask.Hide();
                     if (_timer.Interval != SafetyRefreshIntervalMs)
@@ -737,7 +741,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
             return;
         }
 
-        SetPrivacyMode(!_privacyModeEnabled);
+        CyclePrivacyMode();
     }
 
     private void ShowStrengthControlFromHotKey()
@@ -786,7 +790,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
         if (!_privacyModeEnabled)
         {
-            SetStatus("Focus reveal requires Full privacy");
+            SetStatus("Focus reveal requires Privacy");
             return;
         }
 
@@ -974,22 +978,28 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private void SetPrivacyMode(bool enabled)
     {
+        SetPrivacyLevel(enabled ? PrivacyMode.Full : PrivacyMode.Off);
+    }
+
+    private void CyclePrivacyMode() => SetPrivacyLevel(PrivacyPolicy.Next(_privacyLevel));
+
+    private void SetPrivacyLevel(PrivacyMode mode)
+    {
         EnsureStrengthSlider();
-        var changed = _privacyModeEnabled != enabled;
-        _privacyModeEnabled = enabled;
-        if (!enabled)
+        var changed = _privacyLevel != mode;
+        _privacyLevel = mode;
+        EndPeek(false);
+
+        if (_privacyModeMenuItem is not null)
         {
-            EndPeek(false);
+            _privacyModeMenuItem.Checked = _privacyModeEnabled;
+            _privacyModeMenuItem.Text = PrivacyPolicy.Label(mode);
         }
 
-        if (_privacyModeMenuItem is not null && _privacyModeMenuItem.Checked != enabled)
-        {
-            _privacyModeMenuItem.Checked = enabled;
-        }
-
-        _strengthSlider.SetPrivacyMode(enabled);
+        _strengthSlider.SetPrivacyLevel(mode);
         if (changed)
         {
+            PersistSettings();
             Refresh();
         }
     }
@@ -1018,7 +1028,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
             _renderer?.UpdateSettings(
                 _invertStrength,
                 GetEffectivePrivacy(IsTargetForeground(_targetHandle)),
-                GetDpiScale(_targetHandle));
+                GetDpiScale(_targetHandle),
+                GetVisibleStatusWidth(IsTargetForeground(_targetHandle), GetDpiScale(_targetHandle)));
         }
         catch (Exception exception)
         {
@@ -1042,9 +1053,14 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private bool GetEffectivePrivacy(bool targetFocused)
     {
-        return !_peekActive &&
-            (_privacyModeEnabled || (_autoPrivacyEnabled && !targetFocused));
+        return GetEffectivePrivacyLevel(targetFocused) != PrivacyMode.Off;
     }
+
+    private PrivacyMode GetEffectivePrivacyLevel(bool focused) =>
+        PrivacyPolicy.Effective(_privacyLevel, _autoPrivacyEnabled, focused, _peekActive);
+
+    private int GetVisibleStatusWidth(bool focused, float dpiScale) =>
+        PrivacyPolicy.StatusWidth(GetEffectivePrivacyLevel(focused), dpiScale);
 
     private bool IsPeekContextValid(bool targetFocused)
     {
@@ -1107,7 +1123,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
     private StrengthSliderForm CreateStrengthSlider()
     {
-        return new StrengthSliderForm(
+        var control = new StrengthSliderForm(
             _invertStrength,
             _enabled,
             _privacyModeEnabled,
@@ -1119,22 +1135,31 @@ internal sealed class GpuInvertApplication : ApplicationContext
             TogglePeekFromControl,
             () => SetStrengthControlVisible(false),
             _bottomCutPixels,
-            SetBottomCutPixels);
+            SetBottomCutPixels,
+            CyclePrivacyMode);
+        control.SetPrivacyLevel(_privacyLevel);
+        return control;
     }
 
     private void SetBottomCutPixels(int pixels)
     {
         _bottomCutPixels = Math.Clamp(pixels, 0, 10000);
+        PersistSettings();
+        Refresh();
+    }
+
+    private void PersistSettings()
+    {
         GpuInvertSettings.Save(new GpuInvertSettings
         {
             Enabled = _enabled,
             PrivacyModeEnabled = _privacyModeEnabled,
+            PrivacyLevel = (int)_privacyLevel,
             AutoPrivacyEnabled = _autoPrivacyEnabled,
             InvertStrength = _invertStrength,
             ShowStrengthControl = _showStrengthControl,
             BottomCutPixels = _bottomCutPixels
         });
-        Refresh();
     }
 
     private void EnsureStrengthSlider()

@@ -32,11 +32,20 @@ left-button double-click on the tray icon also displays the compact control.
 The 411x40 compact control exposes
 synchronized GPU invert, Privacy, and Auto checkboxes, a Focus Reveal eye
 button, a 0-100% slider, and a close button. Focus Reveal temporarily removes
-Full privacy for eight seconds and then locks the content again. Auto privacy
+manual privacy for eight seconds and then locks the content again. Auto privacy
 masks content whenever KakaoTalk loses foreground focus. Disabling GPU invert
 pauses GPU rendering and hides the capture overlay without disabling privacy.
 Close requests hide the compact control instead of disposing it, and the
 application recreates the control if an external window message disposes it.
+`Ctrl+H`, the Privacy checkbox, and its tray item cycle Off -> StatusOnly -> Full
+-> Off. StatusOnly leaves a right-aligned time/unread column visible, with a
+dash indicator; Full uses a check mark. The column starts one physical pixel
+inside a 90-DIP right inset, calibrated to the supplied chat-list screenshot
+(x=527 for a 638px-wide window at 125% scaling). It uses no OCR or additional
+capture loop, so alternate KakaoTalk fonts/layouts may need recalibration.
+GPU and native fallback masks use the same boundary. Auto privacy still applies
+Full while unfocused; Peek temporarily reveals either manual mode. PrivacyLevel
+is persisted immediately; old PrivacyModeEnabled=true settings migrate to Full.
 The `Cut` numeric input after Auto clips physical pixels from the main window's
 bottom edge (default 125, zero restores the original region). It saves each
 committed value immediately as `BottomCutPixels`; valid typed values commit after

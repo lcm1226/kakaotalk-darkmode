@@ -500,6 +500,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
             ? Math.Max(_bottomCutPixels, target.Value.Y + target.Value.Height - advertisementTop)
             : _bottomCutPixels;
         _privacyMask.BottomCutPixels = _bottomCutPixels;
+        _privacyMask.MaskColor = _enabled ? Color.Black : Color.White;
         var effectivePrivacy = GetEffectivePrivacy(targetFocused);
         var dpiScale = GetDpiScale(target.Value.Handle);
         _privacyMask.VisibleStatusWidth = GetVisibleStatusWidth(targetFocused, dpiScale);

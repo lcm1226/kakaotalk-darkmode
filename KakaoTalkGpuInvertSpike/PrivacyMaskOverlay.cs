@@ -7,6 +7,7 @@ internal sealed class PrivacyMaskOverlay : IDisposable
     private readonly PrivacyMaskForm _contentMask = new();
     public int BottomCutPixels { get; set; }
     public int VisibleStatusWidth { get; set; }
+    public Color MaskColor { get; set; } = Color.Black;
 
     public void Position(TargetWindow target, float dpiScale, bool show)
     {
@@ -16,7 +17,10 @@ internal sealed class PrivacyMaskOverlay : IDisposable
             return;
         }
 
-        _contentMask.Position(target.Handle, CalculateBounds(target, dpiScale, BottomCutPixels, VisibleStatusWidth));
+        _contentMask.Position(
+            target.Handle,
+            CalculateBounds(target, dpiScale, BottomCutPixels, VisibleStatusWidth),
+            MaskColor);
     }
 
     internal static Rectangle CalculateBounds(TargetWindow target, float dpiScale, int bottomCutPixels, int visibleStatusWidth)
@@ -52,6 +56,8 @@ internal sealed class PrivacyMaskOverlay : IDisposable
     {
         private nint _ownerHandle;
         private bool _inputPassThroughVerified;
+        private bool _layeredAlphaConfigured;
+        private Color _requestedColor = Color.Black;
 
         public PrivacyMaskForm()
         {
@@ -72,19 +78,22 @@ internal sealed class PrivacyMaskOverlay : IDisposable
                 var parameters = base.CreateParams;
                 parameters.ExStyle |= NativeMethods.WsExTransparent |
                     NativeMethods.WsExToolWindow |
-                    NativeMethods.WsExNoActivate;
+                    NativeMethods.WsExNoActivate |
+                    NativeMethods.WsExLayered;
                 parameters.Style |= NativeMethods.WsDisabled;
                 return parameters;
             }
         }
 
-        public void Position(nint ownerHandle, Rectangle bounds)
+        public void Position(nint ownerHandle, Rectangle bounds, Color color)
         {
             if (bounds.Width <= 0 || bounds.Height <= 0)
             {
                 Hide();
                 return;
             }
+
+            _requestedColor = color;
 
             _ = Handle;
             if (_ownerHandle != ownerHandle)
@@ -93,6 +102,16 @@ internal sealed class PrivacyMaskOverlay : IDisposable
                 _ownerHandle = ownerHandle;
                 _inputPassThroughVerified = false;
             }
+
+            if (!_layeredAlphaConfigured)
+            {
+                _layeredAlphaConfigured = NativeMethods.SetLayeredWindowAttributes(
+                    Handle, 0, 255, NativeMethods.LwaAlpha);
+                if (!_layeredAlphaConfigured)
+                    AppDiagnostics.WriteStatus("Privacy mask layered hit-testing could not be configured");
+            }
+
+            if (BackColor != _requestedColor) BackColor = _requestedColor;
 
             if (!Visible)
             {
@@ -111,9 +130,9 @@ internal sealed class PrivacyMaskOverlay : IDisposable
 
             if (!_inputPassThroughVerified && !IsInputPassThrough())
             {
-                Hide();
-                throw new InvalidOperationException(
-                    "A privacy mask window failed its input pass-through check.");
+                // A transient WindowFromPoint result must not hide Privacy or unwind Refresh.
+                AppDiagnostics.WriteStatus("Privacy mask hit-test confirmation deferred");
+                return;
             }
 
             _inputPassThroughVerified = true;

@@ -46,6 +46,9 @@ capture loop, so alternate KakaoTalk fonts/layouts may need recalibration.
 GPU and native fallback masks use the same boundary. Auto privacy still applies
 Full while unfocused; Peek temporarily reveals either manual mode. PrivacyLevel
 is persisted immediately; old PrivacyModeEnabled=true settings migrate to Full.
+With GPU invert disabled, the native Privacy mask uses a white fill. A transient
+pass-through check result no longer hides the strength control or unwinds Refresh;
+layered hit testing is configured explicitly and rechecked on later refreshes.
 The `Cut` numeric input after Auto clips physical pixels from the main window's
 bottom edge (default 125, zero restores the original region). It saves each
 committed value immediately as `BottomCutPixels`; valid typed values commit after

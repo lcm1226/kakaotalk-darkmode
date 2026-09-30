@@ -22,14 +22,15 @@ internal sealed class WindowRegionCut : IDisposable
     public void Apply(TargetWindow target, int pixels, bool allowEmpty = false)
     {
         if (pixels <= 0) { Dispose(); return; }
+        using var physicalContext = new DpiContextScope(new nint(-4));
         var thread = NativeMethods.GetWindowThreadProcessId(target.Handle, out var process);
-        if (_window != target.Handle || _thread != thread || _process != process)
+        var newWindow = _window != target.Handle || _thread != thread || _process != process;
+        if (newWindow)
         {
             Dispose();
             _window = target.Handle;
             _thread = thread;
             _process = process;
-            _original = ReadRegion(_window);
         }
         // KakaoTalk's DWM non-client surface otherwise fills the removed region with white.
         if (_clipNonClientFrame && DwmGetWindowAttribute(_window, 1, out var enabled, sizeof(int)) == 0 && enabled != 0)
@@ -41,6 +42,14 @@ internal sealed class WindowRegionCut : IDisposable
         if (!NativeMethods.GetWindowRect(_window, out var bounds))
             throw new InvalidOperationException("Cannot read window bounds for bottom cut.");
 
+        // HRGNs are interpreted in the target window's DPI coordinates. Passing
+        // physical pixels to a system-aware KakaoTalk window enlarges the region.
+        using var windowContext = new DpiContextScope(GetWindowDpiAwarenessContext(_window));
+        if (!NativeMethods.GetWindowRect(_window, out var windowBounds) ||
+            bounds.Height <= 0 || windowBounds.Height <= 0)
+            throw new InvalidOperationException("Cannot read target-DPI bounds for bottom cut.");
+        if (newWindow) _original = ReadRegion(_window);
+
         var current = ReadRegion(_window);
         try
         {
@@ -51,8 +60,9 @@ internal sealed class WindowRegionCut : IDisposable
                 _original = Copy(current);
             }
             var visibleHeight = allowEmpty ? Math.Max(0, target.Height - pixels) : VisibleHeight(target.Height, pixels);
-            var bottom = Math.Clamp(target.Y - bounds.Top + visibleHeight, allowEmpty ? 0 : 1, bounds.Height);
-            var desired = CreateRectRgn(0, 0, bounds.Width, bottom);
+            var physicalBottom = Math.Clamp(target.Y - bounds.Top + visibleHeight, 0, bounds.Height);
+            var bottom = ToWindowCoordinates(physicalBottom, bounds.Height, windowBounds.Height, allowEmpty);
+            var desired = CreateRectRgn(0, 0, windowBounds.Width, bottom);
             if (desired == 0) throw new Win32Exception();
             try
             {
@@ -77,27 +87,31 @@ internal sealed class WindowRegionCut : IDisposable
     public void Dispose()
     {
         var thread = NativeMethods.GetWindowThreadProcessId(_window, out var process);
-        if (_window != 0 && _applied != 0 && thread == _thread && process == _process)
+        if (_window != 0 && thread == _thread && process == _process)
         {
-            var current = ReadRegion(_window);
-            try
+            using var context = new DpiContextScope(GetWindowDpiAwarenessContext(_window));
+            if (_applied != 0)
             {
-                if (SameRegion(current, _applied))
+                var current = ReadRegion(_window);
+                try
                 {
-                    var transfer = Copy(_original);
-                    if (SetWindowRgn(_window, transfer, true) == 0)
+                    if (SameRegion(current, _applied))
                     {
-                        Delete(transfer);
-                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot restore window region.");
+                        var transfer = Copy(_original);
+                        if (SetWindowRgn(_window, transfer, true) == 0)
+                        {
+                            Delete(transfer);
+                            throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot restore window region.");
+                        }
                     }
                 }
+                finally { Delete(current); }
             }
-            finally { Delete(current); }
-        }
-        if (_restoreNonClientFrame && _window != 0 && thread == _thread && process == _process)
-        {
-            var enabledPolicy = 2;
-            Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(_window, 2, ref enabledPolicy, sizeof(int)));
+            if (_restoreNonClientFrame)
+            {
+                var enabledPolicy = 2;
+                Marshal.ThrowExceptionForHR(DwmSetWindowAttribute(_window, 2, ref enabledPolicy, sizeof(int)));
+            }
         }
         _restoreNonClientFrame = false;
         Delete(_original);
@@ -126,6 +140,26 @@ internal sealed class WindowRegionCut : IDisposable
         throw new Win32Exception();
     }
     private static void Delete(nint region) { if (region != 0) _ = DeleteObject(region); }
+
+    internal static int ToWindowCoordinates(int bottom, int physicalHeight, int windowHeight, bool allowEmpty) =>
+        Math.Clamp((int)Math.Floor(bottom * (double)windowHeight / Math.Max(1, physicalHeight)),
+            allowEmpty ? 0 : 1, Math.Max(1, windowHeight));
+
+    private readonly struct DpiContextScope : IDisposable
+    {
+        private readonly nint _previous;
+        public DpiContextScope(nint context)
+        {
+            _previous = SetThreadDpiAwarenessContext(context);
+            if (_previous == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot enter window DPI context.");
+        }
+        public void Dispose() => _ = SetThreadDpiAwarenessContext(_previous);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern nint GetWindowDpiAwarenessContext(nint window);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(nint window, int attribute, out int value, int size);
     [DllImport("dwmapi.dll")]

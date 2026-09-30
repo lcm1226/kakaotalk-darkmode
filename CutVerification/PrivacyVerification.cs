@@ -14,6 +14,17 @@ internal static class PrivacyVerification
         Check(PrivacyPolicy.Next(PrivacyMode.Off) == PrivacyMode.StatusOnly, "first privacy press reveals status column");
         Check(PrivacyPolicy.Next(PrivacyMode.StatusOnly) == PrivacyMode.Full, "second privacy press covers status column");
         Check(PrivacyPolicy.Next(PrivacyMode.Full) == PrivacyMode.Off, "third privacy press disables mask");
+        Check(WindowRegionCut.ToWindowCoordinates(798, 918, 765, false) == 665,
+            "120 physical-pixel cut converts to system-aware coordinates at mixed DPI");
+        Check(WindowRegionCut.ToWindowCoordinates(0, 918, 765, true) == 0,
+            "fully removed ad stays empty across DPI contexts");
+        Check(WindowRegionCut.ToWindowCoordinates(798, 918, 918, false) == 798,
+            "per-monitor-aware cut preserves physical pixel coordinates");
+        Check(KakaoTalkWindowFinder.MeetsMinimumSize(350, 600, 96), "narrow 100-percent desktop main window is detected");
+        Check(KakaoTalkWindowFinder.MeetsMinimumSize(525, 900, 144), "same logical main window is detected at 150 percent");
+        Check(!KakaoTalkWindowFinder.MeetsMinimumSize(180, 200, 96), "tiny utility windows are excluded");
+        Check(KakaoTalkWindowFinder.IsMainWindowTitle("\uCE74\uCE74\uC624\uD1A1") &&
+            !KakaoTalkWindowFinder.IsMainWindowTitle("Conversation"), "detached conversations remain excluded by title");
         Check(PrivacyPolicy.Effective(PrivacyMode.StatusOnly, true, false, false) == PrivacyMode.Full, "Auto retains full protection while unfocused");
         Check(PrivacyPolicy.Effective(PrivacyMode.StatusOnly, true, true, false) == PrivacyMode.StatusOnly, "manual status mode returns on focus");
         Check(PrivacyPolicy.Effective(PrivacyMode.StatusOnly, true, false, true) == PrivacyMode.Off, "Peek temporarily reveals status-mode content");

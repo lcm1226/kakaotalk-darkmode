@@ -7,8 +7,8 @@ internal readonly record struct TargetWindow(nint Handle, int X, int Y, int Widt
 
 internal static class KakaoTalkWindowFinder
 {
-    private const int MinimumWidth = 500;
-    private const int MinimumHeight = 500;
+    private const int MinimumLogicalWidth = 240;
+    private const int MinimumLogicalHeight = 300;
 
     public static TargetWindow? FindMainWindow()
     {
@@ -45,7 +45,7 @@ internal static class KakaoTalkWindowFinder
                 return true;
             }
 
-            if (bounds.Width < MinimumWidth || bounds.Height < MinimumHeight)
+            if (!MeetsMinimumSize(bounds.Width, bounds.Height, NativeMethods.GetDpiForWindow(hwnd)))
             {
                 return true;
             }
@@ -77,7 +77,7 @@ internal static class KakaoTalkWindowFinder
         target = default;
         if (hwnd == nint.Zero || !NativeMethods.IsWindowVisible(hwnd) || NativeMethods.IsIconic(hwnd) ||
             !NativeMethods.TryGetVisibleBounds(hwnd, out var bounds) ||
-            bounds.Width < MinimumWidth || bounds.Height < MinimumHeight ||
+            !MeetsMinimumSize(bounds.Width, bounds.Height, NativeMethods.GetDpiForWindow(hwnd)) ||
             !HasMainWindowTitle(hwnd))
         {
             return false;
@@ -94,7 +94,14 @@ internal static class KakaoTalkWindowFinder
         return IsMainWindowTitle(title.ToString());
     }
 
-    private static bool IsMainWindowTitle(string title)
+    internal static bool MeetsMinimumSize(int width, int height, uint dpi)
+    {
+        var scale = dpi == 0 ? 1 : dpi / 96d;
+        return width >= Math.Round(MinimumLogicalWidth * scale) &&
+            height >= Math.Round(MinimumLogicalHeight * scale);
+    }
+
+    internal static bool IsMainWindowTitle(string title)
     {
         var trimmedTitle = title.Trim();
         return string.Equals(trimmedTitle, "KakaoTalk", StringComparison.OrdinalIgnoreCase) ||

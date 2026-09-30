@@ -119,14 +119,20 @@ internal sealed class PrivacyMaskOverlay : IDisposable
                 Show();
             }
 
+            // Keep this native mask immediately above its owner, underneath any
+            // GPU surface and unrelated foreground app. Excluding the GPU surface
+            // from capture still leaves this normal mask visible in desktop capture.
+            var insertAfter = NativeMethods.GetWindow(ownerHandle, NativeMethods.GwHwndPrevious);
+            var flags = NativeMethods.SwpNoActivate | NativeMethods.SwpShowWindow;
+            if (insertAfter == Handle) flags |= NativeMethods.SwpNoZOrder;
             _ = NativeMethods.SetWindowPos(
                 Handle,
-                nint.Zero,
+                insertAfter == Handle ? nint.Zero : insertAfter,
                 bounds.X,
                 bounds.Y,
                 bounds.Width,
                 bounds.Height,
-                NativeMethods.SwpNoActivate | NativeMethods.SwpShowWindow);
+                flags);
 
             if (!_inputPassThroughVerified && !IsInputPassThrough())
             {

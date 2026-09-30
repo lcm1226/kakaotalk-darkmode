@@ -508,7 +508,7 @@ internal sealed class GpuInvertApplication : ApplicationContext
 
         if (!_enabled)
         {
-            _capture?.SetRenderingEnabled(false);
+            DisposePipeline();
             _overlay.Hide();
             _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
             UpdateStrengthControl(target.Value);
@@ -562,14 +562,9 @@ internal sealed class GpuInvertApplication : ApplicationContext
                 dpiScale,
                 _privacyMask.VisibleStatusWidth);
             _overlay.Position(target.Value, _capture.HasPresentedFrame);
-            if (_capture.HasPresentedFrame)
-            {
-                _privacyMask.Hide();
-            }
-            else
-            {
-                _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
-            }
+            // The GPU overlay is excluded from screen capture. Keep a normal native
+            // mask alongside it so desktop/region screenshots include Privacy as well.
+            _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
 
             UpdateStrengthControl(target.Value);
 
@@ -716,7 +711,9 @@ internal sealed class GpuInvertApplication : ApplicationContext
                         GetDpiScale(target.Handle),
                         GetVisibleStatusWidth(targetFocused, GetDpiScale(target.Handle)));
                     _overlay.Position(target, true);
-                    _privacyMask.Hide();
+                    _privacyMask.MaskColor = _enabled ? Color.Black : Color.White;
+                    _privacyMask.VisibleStatusWidth = GetVisibleStatusWidth(targetFocused, GetDpiScale(target.Handle));
+                    _privacyMask.Position(target, GetDpiScale(target.Handle), GetEffectivePrivacy(targetFocused));
                     if (_timer.Interval != SafetyRefreshIntervalMs)
                     {
                         _timer.Interval = SafetyRefreshIntervalMs;

@@ -10,6 +10,7 @@ internal static class NativeMethods
     internal const int WmHotKey = 0x0312;
     internal const int HtTransparent = -1;
     internal const int GwlpHwndParent = -8;
+    internal const uint GwHwndPrevious = 3;
     internal const int SwHide = 0;
     internal const int SwShowNoActivate = 4;
     internal const int WsPopup = unchecked((int)0x80000000);
@@ -103,6 +104,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    internal static extern nint GetWindow(nint hwnd, uint command);
 
     [DllImport("user32.dll")]
     internal static extern nint SetWinEventHook(

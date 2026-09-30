@@ -91,11 +91,17 @@ settings location remain unchanged. The old startup executable and obsolete
 Settings are stored on graceful exit in
 `%LOCALAPPDATA%\KakaoTalkGpuInvertSpike\settings.json`.
 
-When a GPU frame is visible, privacy remains a branch in the existing shader.
+Privacy remains a branch in the existing shader, and a separate native mask stays
+visible whenever privacy is active, including while GPU frames are presented.
+The GPU overlay is excluded from capture; the native mask is not, so ordinary
+desktop/region screenshots retain masking. APIs that capture only the source
+KakaoTalk HWND (for example PrintWindow or direct window WGC) may bypass an
+external overlay; this is not a guarantee against every capture method.
 The full title-bar strip and left sidebar stay visible while the conversation
 content below the title bar is masked. When GPU invert is disabled or its
 pipeline is recovering, one solid native mask window covers the same content
-region without WGC or pixel processing. This fallback window is disabled,
+region without WGC or pixel processing. GPU OFF now stops capture rather than
+only pausing frame rendering. This native window is disabled,
 transparent to hit testing, and verified with `WindowFromPoint` before it
 remains visible.
 
@@ -103,6 +109,15 @@ Window discovery accepts only a visible KakaoTalk process window whose title is
 exactly `KakaoTalk` or the Korean localized KakaoTalk title. It never falls back
 to a large untitled or room-titled window, so detached chat windows remain
 excluded.
+Minimum dimensions are 240x300 logical pixels scaled by GetDpiForWindow, rather
+than a fixed 500x500 physical-pixel cutoff. This keeps standard narrow main
+windows discoverable on 100% desktops while the title/process checks continue
+to exclude detached conversations.
+Cut requests use physical pixels, but window regions are read, compared, applied,
+and restored in the target HWND's DPI context. Physical boundaries are converted
+to target coordinates so a system-aware KakaoTalk window on a different-DPI
+monitor cannot expand the HRGN and leave an opaque ad background. Integer scaling
+can remove up to one additional physical pixel to keep the boundary conservative.
 
 KakaoTalk location events are marshalled to the WinForms UI thread and
 coalesced into 100 ms refreshes. The coalescing flag remains set for the full

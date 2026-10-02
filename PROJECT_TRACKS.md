@@ -93,10 +93,11 @@ Settings are stored on graceful exit in
 
 Privacy remains a branch in the existing shader, and a separate native mask stays
 visible whenever privacy is active, including while GPU frames are presented.
-The GPU overlay is excluded from capture; the native mask is not, so ordinary
-desktop/region screenshots retain masking. APIs that capture only the source
-KakaoTalk HWND (for example PrintWindow or direct window WGC) may bypass an
-external overlay; this is not a guarantee against every capture method.
+The GPU overlay remains eligible for desktop and remote-session capture so the
+inverted KakaoTalk image is visible through tools such as Chrome Remote Desktop.
+The separate native privacy mask remains visible as well. APIs that capture only
+the source KakaoTalk HWND (for example PrintWindow or direct window WGC) may
+bypass an external overlay; this is not a guarantee against every capture method.
 The full title-bar strip and left sidebar stay visible while the conversation
 content below the title bar is masked. When GPU invert is disabled or its
 pipeline is recovering, one solid native mask window covers the same content

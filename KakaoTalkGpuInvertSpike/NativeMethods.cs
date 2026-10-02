@@ -23,7 +23,6 @@ internal static class NativeMethods
     internal const uint SwpNoActivate = 0x0010;
     internal const uint SwpNoZOrder = 0x0004;
     internal const uint SwpShowWindow = 0x0040;
-    internal const uint WdaExcludeFromCapture = 0x00000011;
     internal const uint ModControl = 0x0002;
     internal const uint ModShift = 0x0004;
     internal const uint ModNoRepeat = 0x4000;
@@ -174,10 +173,6 @@ internal static class NativeMethods
         int width,
         int height,
         uint flags);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool SetWindowDisplayAffinity(nint hwnd, uint affinity);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

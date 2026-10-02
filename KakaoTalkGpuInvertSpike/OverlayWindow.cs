@@ -236,13 +236,6 @@ internal sealed class OverlayWindow : IDisposable
             throw new Win32Exception(error, "Could not initialize the layered GPU overlay window.");
         }
 
-        if (!string.Equals(
-            Environment.GetEnvironmentVariable("KAKAOTALK_GPU_ALLOW_SCREEN_CAPTURE"),
-            "1",
-            StringComparison.Ordinal))
-        {
-            _ = NativeMethods.SetWindowDisplayAffinity(_hwnd, NativeMethods.WdaExcludeFromCapture);
-        }
         lock (WindowSync)
         {
             Windows[_hwnd] = this;

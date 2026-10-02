@@ -562,8 +562,8 @@ internal sealed class GpuInvertApplication : ApplicationContext
                 dpiScale,
                 _privacyMask.VisibleStatusWidth);
             _overlay.Position(target.Value, _capture.HasPresentedFrame);
-            // The GPU overlay is excluded from screen capture. Keep a normal native
-            // mask alongside it so desktop/region screenshots include Privacy as well.
+            // Keep a normal native mask alongside the GPU overlay so desktop/region
+            // screenshots include Privacy even when the overlay is captured.
             _privacyMask.Position(target.Value, dpiScale, effectivePrivacy);
 
             UpdateStrengthControl(target.Value);
